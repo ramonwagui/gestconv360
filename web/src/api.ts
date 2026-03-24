@@ -4,6 +4,7 @@ import type {
   AuditLogItem,
   AuthResponse,
   ChecklistItem,
+  ChecklistItemStatus,
   ChecklistResponse,
   Convenete,
   ConvenetePayload,
@@ -11,7 +12,12 @@ import type {
   InstrumentFilters,
   InstrumentPayload,
   Instrument,
-  Role
+  ManagedUser,
+  Role,
+  StageFollowUp,
+  StageFollowUpListResponse,
+  WorkProgress,
+  WorkflowStage
 } from "./types";
 
 const API_BASE_URL = import.meta.env.VITE_API_BASE_URL ?? "";
@@ -93,6 +99,35 @@ export const register = (nome: string, email: string, senha: string, role: Role)
     body: JSON.stringify({ nome, email, senha, role })
   });
 
+export const listUsersAdmin = (token: string) =>
+  request<ManagedUser[]>("/api/v1/usuarios", {
+    headers: {
+      Authorization: `Bearer ${token}`
+    }
+  });
+
+export const createUserAdmin = (token: string, payload: { nome: string; email: string; senha: string; role: Role }) =>
+  request<ManagedUser>("/api/v1/usuarios", {
+    method: "POST",
+    headers: {
+      Authorization: `Bearer ${token}`
+    },
+    body: JSON.stringify(payload)
+  });
+
+export const updateUserAdmin = (
+  token: string,
+  id: number,
+  payload: Partial<{ nome: string; email: string; senha: string; role: Role }>
+) =>
+  request<ManagedUser>(`/api/v1/usuarios/${id}`, {
+    method: "PUT",
+    headers: {
+      Authorization: `Bearer ${token}`
+    },
+    body: JSON.stringify(payload)
+  });
+
 export const listInstruments = (
   token: string,
   filters: InstrumentFilters
@@ -130,7 +165,13 @@ export const getInstrumentChecklist = (token: string, instrumentId: number) =>
 export const addChecklistItem = (
   token: string,
   instrumentId: number,
-  payload: { nome_documento: string; obrigatorio: boolean; observacao?: string }
+  payload: {
+    nome_documento: string;
+    etapa?: WorkflowStage;
+    obrigatorio: boolean;
+    observacao?: string;
+    status?: ChecklistItemStatus;
+  }
 ) =>
   request<ChecklistItem>(`/api/v1/instrumentos/${instrumentId}/checklist`, {
     method: "POST",
@@ -146,6 +187,27 @@ export const deleteChecklistItem = (token: string, instrumentId: number, itemId:
     headers: {
       Authorization: `Bearer ${token}`
     }
+  });
+
+export const updateChecklistItem = (
+  token: string,
+  instrumentId: number,
+  itemId: number,
+  payload: Partial<{
+    etapa: WorkflowStage;
+    status: ChecklistItemStatus;
+    nome_documento: string;
+    obrigatorio: boolean;
+    observacao: string;
+    ordem: number;
+  }>
+) =>
+  request<ChecklistItem>(`/api/v1/instrumentos/${instrumentId}/checklist/${itemId}`, {
+    method: "PATCH",
+    headers: {
+      Authorization: `Bearer ${token}`
+    },
+    body: JSON.stringify(payload)
   });
 
 export const uploadChecklistItemFile = (token: string, instrumentId: number, itemId: number, file: File) => {
@@ -180,6 +242,69 @@ export const downloadChecklistItemFile = async (
       Authorization: `Bearer ${token}`
     }
   });
+
+  if (!res.ok) {
+    throw new Error(await getErrorMessage(res));
+  }
+
+  const blob = await res.blob();
+  const url = URL.createObjectURL(blob);
+  const link = document.createElement("a");
+  link.href = url;
+  link.download = fallbackName;
+  link.click();
+  URL.revokeObjectURL(url);
+};
+
+export const listStageFollowUps = (token: string, instrumentId: number, stage: WorkflowStage) =>
+  request<StageFollowUpListResponse>(`/api/v1/instrumentos/${instrumentId}/stages/${stage}/follow-ups`, {
+    headers: {
+      Authorization: `Bearer ${token}`
+    }
+  });
+
+export const createStageFollowUp = (
+  token: string,
+  instrumentId: number,
+  stage: WorkflowStage,
+  payload: {
+    texto?: string;
+    arquivos?: File[];
+  }
+) => {
+  const formData = new FormData();
+  if (payload.texto && payload.texto.trim() !== "") {
+    formData.append("texto", payload.texto.trim());
+  }
+  for (const file of payload.arquivos ?? []) {
+    formData.append("arquivos", file);
+  }
+
+  return request<StageFollowUp>(`/api/v1/instrumentos/${instrumentId}/stages/${stage}/follow-ups`, {
+    method: "POST",
+    headers: {
+      Authorization: `Bearer ${token}`
+    },
+    body: formData
+  });
+};
+
+export const downloadStageFollowUpFile = async (
+  token: string,
+  instrumentId: number,
+  stage: WorkflowStage,
+  followUpId: number,
+  fileId: number,
+  fallbackName = "arquivo"
+) => {
+  const res = await fetch(
+    buildUrl(`/api/v1/instrumentos/${instrumentId}/stages/${stage}/follow-ups/${followUpId}/files/${fileId}/download`),
+    {
+      headers: {
+        Authorization: `Bearer ${token}`
+      }
+    }
+  );
 
   if (!res.ok) {
     throw new Error(await getErrorMessage(res));
@@ -232,6 +357,48 @@ export const listDeadlineAlerts = (token: string, limiteDias = 30) =>
       limite_dias: String(limiteDias)
     }
   );
+
+export const getWorkProgress = (token: string, instrumentId: number) =>
+  request<WorkProgress>(`/api/v1/instrumentos/${instrumentId}/work-progress`, {
+    headers: {
+      Authorization: `Bearer ${token}`
+    }
+  });
+
+export const updateWorkProgress = (token: string, instrumentId: number, percentualObra: number) =>
+  request<{ percentual_obra: number }>(`/api/v1/instrumentos/${instrumentId}/work-progress`, {
+    method: "PUT",
+    headers: {
+      Authorization: `Bearer ${token}`
+    },
+    body: JSON.stringify({ percentual_obra: percentualObra })
+  });
+
+export const addWorkMeasurementBulletin = (
+  token: string,
+  instrumentId: number,
+  payload: {
+    data_boletim: string;
+    valor_medicao: number;
+    percentual_obra_informado?: number;
+    observacao?: string;
+  }
+) =>
+  request(`/api/v1/instrumentos/${instrumentId}/work-progress/boletins`, {
+    method: "POST",
+    headers: {
+      Authorization: `Bearer ${token}`
+    },
+    body: JSON.stringify(payload)
+  });
+
+export const deleteWorkMeasurementBulletin = (token: string, instrumentId: number, boletimId: number) =>
+  request<void>(`/api/v1/instrumentos/${instrumentId}/work-progress/boletins/${boletimId}`, {
+    method: "DELETE",
+    headers: {
+      Authorization: `Bearer ${token}`
+    }
+  });
 
 export const healthCheck = () => request<{ status: string }>("/health");
 

@@ -9,6 +9,28 @@ export const instrumentStatusSchema = z.enum([
   "CONCLUIDO"
 ]);
 
+export const instrumentFlowTypeSchema = z.enum([
+  "OBRA",
+  "AQUISICAO_EQUIPAMENTOS",
+  "EVENTOS"
+]);
+
+export const workflowStageSchema = z.enum([
+  "REQUISITOS_CELEBRACAO",
+  "PROJETO_BASICO_TERMO_REFERENCIA",
+  "PROCESSO_EXECUCAO_LICITACAO",
+  "VERIFICACAO_PROCESSO_LICITATORIO",
+  "INSTRUMENTOS_CONTRATUAIS",
+  "ACOMPANHAMENTO_OBRA"
+]);
+
+export const checklistItemStatusSchema = z.enum([
+  "NAO_INICIADO",
+  "EM_ELABORACAO",
+  "CONCLUIDO",
+  "ACEITO"
+]);
+
 const dateString = z.string().date();
 
 const optionalText = z.preprocess((value) => {
@@ -51,6 +73,7 @@ const instrumentBaseSchema = z.object({
   data_dou: optionalDateString,
   concedente: z.string().min(2).max(120),
   convenete_id: optionalConveneteId,
+  fluxo_tipo: instrumentFlowTypeSchema.default("OBRA"),
   status: instrumentStatusSchema.default("EM_ELABORACAO"),
   responsavel: optionalText,
   orgao_executor: optionalText,
@@ -96,6 +119,8 @@ export const alertQuerySchema = z.object({
 
 export const checklistItemCreateSchema = z.object({
   nome_documento: z.string().min(3).max(180),
+  etapa: workflowStageSchema.optional().default("REQUISITOS_CELEBRACAO"),
+  status: checklistItemStatusSchema.optional().default("NAO_INICIADO"),
   obrigatorio: z.boolean().optional().default(true),
   observacao: optionalText,
   ordem: z.coerce.number().int().min(0).optional()
@@ -107,9 +132,48 @@ export const checklistItemIdParamSchema = z.object({
   itemId: z.coerce.number().int().positive()
 });
 
+export const stageParamSchema = z.object({
+  stage: workflowStageSchema
+});
+
+export const stageFollowUpIdParamSchema = z.object({
+  followUpId: z.coerce.number().int().positive()
+});
+
+export const stageFollowUpFileIdParamSchema = z.object({
+  fileId: z.coerce.number().int().positive()
+});
+
+export const stageFollowUpCreateSchema = z
+  .object({
+    texto: optionalText
+  })
+  .refine((payload) => (payload.texto ?? "").trim().length > 0, {
+    message: "Informe um texto ou envie ao menos um arquivo para registrar acompanhamento.",
+    path: ["texto"]
+  });
+
+export const workProgressUpdateSchema = z.object({
+  percentual_obra: z.coerce.number().min(0).max(100)
+});
+
+export const measurementCreateSchema = z.object({
+  data_boletim: dateString,
+  valor_medicao: z.coerce.number().min(0),
+  percentual_obra_informado: z.coerce.number().min(0).max(100).optional(),
+  observacao: optionalText
+});
+
+export const measurementIdParamSchema = z.object({
+  boletimId: z.coerce.number().int().positive()
+});
+
 export type CreateInstrumentInput = z.infer<typeof createInstrumentSchema>;
 export type UpdateInstrumentInput = z.infer<typeof updateInstrumentSchema>;
 export type ListQueryInput = z.infer<typeof listQuerySchema>;
 export type AlertQueryInput = z.infer<typeof alertQuerySchema>;
 export type ChecklistItemCreateInput = z.infer<typeof checklistItemCreateSchema>;
 export type ChecklistItemUpdateInput = z.infer<typeof checklistItemUpdateSchema>;
+export type WorkProgressUpdateInput = z.infer<typeof workProgressUpdateSchema>;
+export type MeasurementCreateInput = z.infer<typeof measurementCreateSchema>;
+export type StageFollowUpCreateInput = z.infer<typeof stageFollowUpCreateSchema>;

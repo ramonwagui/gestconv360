@@ -7,6 +7,15 @@ export type User = {
   role: Role;
 };
 
+export type ManagedUser = {
+  id: number;
+  nome: string;
+  email: string;
+  role: Role;
+  created_at: string;
+  updated_at: string;
+};
+
 export type AuthResponse = {
   user: User;
   token_type: "Bearer";
@@ -20,6 +29,8 @@ export type InstrumentStatus =
   | "VENCIDO"
   | "PRESTACAO_PENDENTE"
   | "CONCLUIDO";
+
+export type InstrumentFlowType = "OBRA" | "AQUISICAO_EQUIPAMENTOS" | "EVENTOS";
 
 export type Instrument = {
   id: number;
@@ -36,6 +47,7 @@ export type Instrument = {
   data_prestacao_contas: string | null;
   data_dou: string | null;
   concedente: string;
+  fluxo_tipo: InstrumentFlowType;
   convenete_id: number | null;
   status: InstrumentStatus;
   responsavel: string | null;
@@ -67,6 +79,7 @@ export type InstrumentPayload = {
   data_prestacao_contas?: string;
   data_dou?: string;
   concedente: string;
+  fluxo_tipo?: InstrumentFlowType;
   convenete_id?: number;
   status: InstrumentStatus;
   responsavel?: string;
@@ -82,8 +95,20 @@ export type ChecklistItemFile = {
   download_path: string;
 };
 
+export type WorkflowStage =
+  | "REQUISITOS_CELEBRACAO"
+  | "PROJETO_BASICO_TERMO_REFERENCIA"
+  | "PROCESSO_EXECUCAO_LICITACAO"
+  | "VERIFICACAO_PROCESSO_LICITATORIO"
+  | "INSTRUMENTOS_CONTRATUAIS"
+  | "ACOMPANHAMENTO_OBRA";
+
+export type ChecklistItemStatus = "NAO_INICIADO" | "EM_ELABORACAO" | "CONCLUIDO" | "ACEITO";
+
 export type ChecklistItem = {
   id: number;
+  etapa: WorkflowStage;
+  status: ChecklistItemStatus;
   nome_documento: string;
   obrigatorio: boolean;
   concluido: boolean;
@@ -101,11 +126,63 @@ export type ChecklistSummary = {
   obrigatorios_concluidos: number;
   pode_iniciar_execucao: boolean;
   pendentes_obrigatorios: string[];
+  etapa_atual: WorkflowStage | null;
+  etapas: Array<{
+    etapa: WorkflowStage;
+    total: number;
+    obrigatorios: number;
+    concluidos: number;
+    obrigatorios_concluidos: number;
+    concluida: boolean;
+    pendentes_obrigatorios: string[];
+  }>;
 };
 
 export type ChecklistResponse = {
   resumo: ChecklistSummary;
   itens: ChecklistItem[];
+};
+
+export type StageFollowUpFile = {
+  id: number;
+  nome_original: string;
+  mime_type: string | null;
+  tamanho: number | null;
+  created_at: string;
+  download_path: string;
+};
+
+export type StageFollowUp = {
+  id: number;
+  etapa: WorkflowStage;
+  texto: string | null;
+  user: {
+    id: number | null;
+    nome: string | null;
+    email: string;
+  };
+  arquivos: StageFollowUpFile[];
+  created_at: string;
+  updated_at: string;
+};
+
+export type StageFollowUpListResponse = {
+  itens: StageFollowUp[];
+};
+
+export type WorkMeasurementBulletin = {
+  id: number;
+  data_boletim: string;
+  valor_medicao: number;
+  percentual_obra_informado: number | null;
+  observacao: string | null;
+  created_at: string;
+};
+
+export type WorkProgress = {
+  percentual_obra: number;
+  valor_total_boletins: number;
+  boletins: WorkMeasurementBulletin[];
 };
 
 export type ApiError = {

@@ -28,6 +28,28 @@ enum AuditAction {
   DEACTIVATE
 }
 
+enum InstrumentWorkflowStage {
+  REQUISITOS_CELEBRACAO
+  PROJETO_BASICO_TERMO_REFERENCIA
+  PROCESSO_EXECUCAO_LICITACAO
+  VERIFICACAO_PROCESSO_LICITATORIO
+  INSTRUMENTOS_CONTRATUAIS
+  ACOMPANHAMENTO_OBRA
+}
+
+enum InstrumentFlowType {
+  OBRA
+  AQUISICAO_EQUIPAMENTOS
+  EVENTOS
+}
+
+enum ChecklistItemStatus {
+  NAO_INICIADO
+  EM_ELABORACAO
+  CONCLUIDO
+  ACEITO
+}
+
 model User {
   id           Int      @id @default(autoincrement())
   nome         String
@@ -37,6 +59,7 @@ model User {
   createdAt    DateTime @default(now())
   updatedAt    DateTime @updatedAt
   auditLogs    AuditLog[]
+  stageFollowUps InstrumentStageFollowUp[]
 }
 
 model InstrumentProposal {
@@ -53,6 +76,7 @@ model InstrumentProposal {
   dataPrestacaoContas   DateTime?
   dataDou               DateTime?
   concedente            String
+  fluxoTipo             InstrumentFlowType @default(OBRA)
   status                InstrumentStatus @default(EM_ELABORACAO)
   responsavel           String?
   orgaoExecutor         String?
@@ -64,6 +88,9 @@ model InstrumentProposal {
   updatedAt             DateTime         @updatedAt
   auditLogs             AuditLog[]
   checklistItems        InstrumentChecklistItem[]
+  workProgress          InstrumentWorkProgress?
+  measurementBulletins  InstrumentMeasurementBulletin[]
+  stageFollowUps        InstrumentStageFollowUp[]
 
   @@index([concedente])
   @@index([status])
@@ -75,6 +102,8 @@ model InstrumentProposal {
 model InstrumentChecklistItem {
   id                 Int      @id @default(autoincrement())
   instrumentId       Int
+  etapa              InstrumentWorkflowStage @default(REQUISITOS_CELEBRACAO)
+  status             ChecklistItemStatus @default(NAO_INICIADO)
   nomeDocumento      String
   obrigatorio        Boolean  @default(true)
   concluido          Boolean  @default(false)
@@ -91,6 +120,64 @@ model InstrumentChecklistItem {
   instrument InstrumentProposal @relation(fields: [instrumentId], references: [id], onDelete: Cascade)
 
   @@index([instrumentId, ordem])
+  @@index([instrumentId, etapa, ordem])
+}
+
+model InstrumentWorkProgress {
+  id             Int      @id @default(autoincrement())
+  instrumentId   Int      @unique
+  percentualObra Decimal  @default(0)
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
+
+  instrument InstrumentProposal @relation(fields: [instrumentId], references: [id], onDelete: Cascade)
+}
+
+model InstrumentMeasurementBulletin {
+  id                     Int      @id @default(autoincrement())
+  instrumentId           Int
+  dataBoletim            DateTime
+  valorMedicao           Decimal
+  percentualObraInformado Decimal?
+  observacao             String?
+  createdAt              DateTime @default(now())
+  updatedAt              DateTime @updatedAt
+
+  instrument InstrumentProposal @relation(fields: [instrumentId], references: [id], onDelete: Cascade)
+
+  @@index([instrumentId, dataBoletim])
+}
+
+model InstrumentStageFollowUp {
+  id           Int                     @id @default(autoincrement())
+  instrumentId Int
+  etapa        InstrumentWorkflowStage
+  texto        String?
+  userId       Int?
+  userEmail    String
+  createdAt    DateTime                @default(now())
+  updatedAt    DateTime                @updatedAt
+
+  instrument InstrumentProposal        @relation(fields: [instrumentId], references: [id], onDelete: Cascade)
+  user       User?                     @relation(fields: [userId], references: [id])
+  files      InstrumentStageFollowUpFile[]
+
+  @@index([instrumentId, etapa, createdAt])
+}
+
+model InstrumentStageFollowUpFile {
+  id                  Int                      @id @default(autoincrement())
+  followUpId          Int
+  arquivoPath         String
+  arquivoNomeOriginal String
+  arquivoMimeType     String?
+  arquivoTamanho      Int?
+  createdAt           DateTime                 @default(now())
+  updatedAt           DateTime                 @updatedAt
+
+  followUp InstrumentStageFollowUp             @relation(fields: [followUpId], references: [id], onDelete: Cascade)
+
+  @@index([followUpId, createdAt])
 }
 
 model AuditLog {

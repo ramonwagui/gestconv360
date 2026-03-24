@@ -1,41 +1,54 @@
-import { FormEvent, useEffect, useMemo, useState } from "react";
+import { DragEvent, FormEvent, useEffect, useMemo, useState } from "react";
 
 import {
+  addWorkMeasurementBulletin,
   addChecklistItem,
+  createUserAdmin,
   createConvenete,
   createInstrument,
+  deleteWorkMeasurementBulletin,
   deleteConvenete,
   deactivateInstrument,
   deleteChecklistItem,
-  downloadChecklistItemFile,
+  downloadStageFollowUpFile,
   getInstrumentById,
   getInstrumentChecklist,
+  getWorkProgress,
   healthCheck,
   listAuditLogs,
   listConvenetes,
   listDeadlineAlerts,
   listInstruments,
+  listUsersAdmin,
   login,
-  removeChecklistItemFile,
-  register,
-  uploadChecklistItemFile,
+  createStageFollowUp,
+  listStageFollowUps,
+  updateUserAdmin,
+  updateChecklistItem,
   updateConvenete,
+  updateWorkProgress,
   updateInstrument
 } from "./api";
 import type {
   AuditAction,
   AuditLogItem,
   ChecklistItem,
+  ChecklistItemStatus,
   ChecklistSummary,
   Convenete,
   ConvenetePayload,
   DeadlineAlertItem,
   Instrument,
+  InstrumentFlowType,
   InstrumentFilters,
   InstrumentPayload,
   InstrumentStatus,
+  ManagedUser,
   Role,
-  User
+  StageFollowUp,
+  User,
+  WorkProgress,
+  WorkflowStage
 } from "./types";
 
 const TOKEN_KEY = "gestconv360.token";
@@ -52,10 +65,94 @@ const STATUS_OPTIONS: InstrumentStatus[] = [
 
 const AUDIT_ACTION_OPTIONS: AuditAction[] = ["CREATE", "UPDATE", "DEACTIVATE"];
 
-type AuthMode = "login" | "register";
-type MenuView = "dashboard" | "instrumentos" | "convenetes" | "auditoria";
+const FLOW_TYPE_OPTIONS: InstrumentFlowType[] = ["OBRA", "AQUISICAO_EQUIPAMENTOS", "EVENTOS"];
+
+const FLOW_TYPE_LABELS: Record<InstrumentFlowType, string> = {
+  OBRA: "Obra",
+  AQUISICAO_EQUIPAMENTOS: "Aquisicao de Equipamentos",
+  EVENTOS: "Eventos"
+};
+
+const WORKFLOW_STAGES: WorkflowStage[] = [
+  "REQUISITOS_CELEBRACAO",
+  "PROJETO_BASICO_TERMO_REFERENCIA",
+  "PROCESSO_EXECUCAO_LICITACAO",
+  "VERIFICACAO_PROCESSO_LICITATORIO",
+  "INSTRUMENTOS_CONTRATUAIS",
+  "ACOMPANHAMENTO_OBRA"
+];
+
+const CHECKLIST_STATUS_OPTIONS: ChecklistItemStatus[] = [
+  "NAO_INICIADO",
+  "EM_ELABORACAO",
+  "CONCLUIDO",
+  "ACEITO"
+];
+
+const CHECKLIST_STATUS_LABELS: Record<ChecklistItemStatus, string> = {
+  NAO_INICIADO: "Nao iniciado",
+  EM_ELABORACAO: "Em elaboracao",
+  CONCLUIDO: "Concluido",
+  ACEITO: "Aceito"
+};
+
+const STAGE_LABELS_BY_FLOW: Record<InstrumentFlowType, Record<WorkflowStage, string>> = {
+  OBRA: {
+    REQUISITOS_CELEBRACAO: "Requisitos de Celebracao",
+    PROJETO_BASICO_TERMO_REFERENCIA: "Projeto Basico / Termo de Referencia",
+    PROCESSO_EXECUCAO_LICITACAO: "Processo de Execucao (Licitacao)",
+    VERIFICACAO_PROCESSO_LICITATORIO: "Verificacao do Processo Licitatorio",
+    INSTRUMENTOS_CONTRATUAIS: "Instrumentos Contratuais",
+    ACOMPANHAMENTO_OBRA: "Acompanhamento de Obra"
+  },
+  AQUISICAO_EQUIPAMENTOS: {
+    REQUISITOS_CELEBRACAO: "Requisitos de Celebracao",
+    PROJETO_BASICO_TERMO_REFERENCIA: "Termo de Referencia e Projeto",
+    PROCESSO_EXECUCAO_LICITACAO: "Processo de Aquisicao (Licitacao)",
+    VERIFICACAO_PROCESSO_LICITATORIO: "Verificacao do Processo Licitatorio",
+    INSTRUMENTOS_CONTRATUAIS: "Instrumentos Contratuais",
+    ACOMPANHAMENTO_OBRA: "Acompanhamento de Entregas"
+  },
+  EVENTOS: {
+    REQUISITOS_CELEBRACAO: "Requisitos de Celebracao",
+    PROJETO_BASICO_TERMO_REFERENCIA: "Plano Basico do Evento",
+    PROCESSO_EXECUCAO_LICITACAO: "Processo de Contratacao",
+    VERIFICACAO_PROCESSO_LICITATORIO: "Verificacao do Processo",
+    INSTRUMENTOS_CONTRATUAIS: "Instrumentos Contratuais",
+    ACOMPANHAMENTO_OBRA: "Acompanhamento de Execucao"
+  }
+};
+
+const getStageLabels = (flowType?: InstrumentFlowType) => {
+  return STAGE_LABELS_BY_FLOW[flowType ?? "OBRA"];
+};
+
+const emptyStageFollowUps = (): Record<WorkflowStage, StageFollowUp[]> => ({
+  REQUISITOS_CELEBRACAO: [],
+  PROJETO_BASICO_TERMO_REFERENCIA: [],
+  PROCESSO_EXECUCAO_LICITACAO: [],
+  VERIFICACAO_PROCESSO_LICITATORIO: [],
+  INSTRUMENTOS_CONTRATUAIS: [],
+  ACOMPANHAMENTO_OBRA: []
+});
+
+type MenuView = "dashboard" | "instrumentos" | "convenetes" | "usuarios" | "auditoria";
+type StageFollowUpFilter = "TODOS" | "SO_MEUS" | "COM_ANEXO" | "COM_TEXTO";
+
+const STAGE_FOLLOW_UP_FILTER_LABELS: Record<StageFollowUpFilter, string> = {
+  TODOS: "Todos",
+  SO_MEUS: "So meus",
+  COM_ANEXO: "Com anexo",
+  COM_TEXTO: "Com texto"
+};
 
 type ConveneteForm = ConvenetePayload;
+type AdminUserForm = {
+  nome: string;
+  email: string;
+  senha: string;
+  role: Role;
+};
 
 type InstrumentForm = {
   proposta: string;
@@ -70,6 +167,7 @@ type InstrumentForm = {
   data_prestacao_contas: string;
   data_dou: string;
   concedente: string;
+  fluxo_tipo: InstrumentFlowType;
   convenete_id: string;
   status: InstrumentStatus;
   responsavel: string;
@@ -98,6 +196,17 @@ const summarizeText = (value: string, maxLength = 140) => {
   return `${trimmed.slice(0, maxLength).trimEnd()}...`;
 };
 
+const formatFileSize = (size: number) => {
+  if (size < 1024) {
+    return `${size} B`;
+  }
+  const kb = size / 1024;
+  if (kb < 1024) {
+    return `${kb.toFixed(1)} KB`;
+  }
+  return `${(kb / 1024).toFixed(1)} MB`;
+};
+
 const blankFilters = (): InstrumentFilters => ({
   status: "",
   concedente: "",
@@ -119,6 +228,7 @@ const emptyInstrumentForm = (): InstrumentForm => ({
   data_prestacao_contas: "",
   data_dou: "",
   concedente: "",
+  fluxo_tipo: "OBRA",
   convenete_id: "",
   status: "EM_ELABORACAO",
   responsavel: "",
@@ -136,6 +246,13 @@ const emptyConveneteForm = (): ConveneteForm => ({
   cidade: "",
   tel: "",
   email: ""
+});
+
+const emptyAdminUserForm = (): AdminUserForm => ({
+  nome: "",
+  email: "",
+  senha: "",
+  role: "CONSULTA"
 });
 
 const readStoredUser = (): User | null => {
@@ -212,6 +329,7 @@ const toPayload = (form: InstrumentForm): InstrumentPayload => {
     data_prestacao_contas: asOptional(form.data_prestacao_contas),
     data_dou: asOptional(form.data_dou),
     concedente: form.concedente.trim(),
+    fluxo_tipo: form.fluxo_tipo,
     convenete_id: asOptionalNumber(form.convenete_id),
     status: form.status,
     responsavel: asOptional(form.responsavel),
@@ -233,6 +351,7 @@ const fromInstrumentToForm = (item: Instrument): InstrumentForm => ({
   data_prestacao_contas: item.data_prestacao_contas ?? "",
   data_dou: item.data_dou ?? "",
   concedente: item.concedente,
+  fluxo_tipo: item.fluxo_tipo,
   convenete_id: item.convenete_id ? String(item.convenete_id) : "",
   status: item.status,
   responsavel: item.responsavel ?? "",
@@ -296,10 +415,9 @@ const exportExcel = (items: Instrument[]) => {
 };
 
 export default function App() {
-  const logoSrc = "/logo-gestconv-novo.png";
+  const logoSrc = "/logo-gestconv-novo-semfundo-removebg-preview.png";
 
   const [healthStatus, setHealthStatus] = useState<"checking" | "ok" | "error">("checking");
-  const [authMode, setAuthMode] = useState<AuthMode>("login");
   const [activeView, setActiveView] = useState<MenuView>(() =>
     readInstrumentIdFromPath(window.location.pathname) ? "instrumentos" : "dashboard"
   );
@@ -312,8 +430,6 @@ export default function App() {
 
   const [email, setEmail] = useState("");
   const [senha, setSenha] = useState("");
-  const [nome, setNome] = useState("");
-  const [role, setRole] = useState<Role>("CONSULTA");
 
   const [filters, setFilters] = useState<InstrumentFilters>(() => blankFilters());
   const [form, setForm] = useState<InstrumentForm>(() => emptyInstrumentForm());
@@ -335,15 +451,37 @@ export default function App() {
   const [checklistDocName, setChecklistDocName] = useState("");
   const [checklistRequired, setChecklistRequired] = useState(true);
   const [checklistNote, setChecklistNote] = useState("");
+  const [checklistStage, setChecklistStage] = useState<WorkflowStage>("REQUISITOS_CELEBRACAO");
+  const [activeWorkflowStage, setActiveWorkflowStage] = useState<WorkflowStage>("REQUISITOS_CELEBRACAO");
   const [busyChecklistItemId, setBusyChecklistItemId] = useState<number | null>(null);
+  const [stageFollowUps, setStageFollowUps] = useState<Record<WorkflowStage, StageFollowUp[]>>(() =>
+    emptyStageFollowUps()
+  );
+  const [stageFollowUpText, setStageFollowUpText] = useState("");
+  const [stageFollowUpFiles, setStageFollowUpFiles] = useState<File[]>([]);
+  const [isSavingStageFollowUp, setIsSavingStageFollowUp] = useState(false);
+  const [isDraggingStageFiles, setIsDraggingStageFiles] = useState(false);
+  const [stageFollowUpModalStage, setStageFollowUpModalStage] = useState<WorkflowStage | null>(null);
+  const [stageFollowUpFilter, setStageFollowUpFilter] = useState<StageFollowUpFilter>("TODOS");
+  const [expandedFollowUpIds, setExpandedFollowUpIds] = useState<number[]>([]);
+  const [workProgress, setWorkProgress] = useState<WorkProgress | null>(null);
+  const [obraPercentual, setObraPercentual] = useState("0");
+  const [boletimData, setBoletimData] = useState(todayDate());
+  const [boletimValor, setBoletimValor] = useState(formatCurrencyInput(0));
+  const [boletimPercentual, setBoletimPercentual] = useState("");
+  const [boletimObservacao, setBoletimObservacao] = useState("");
 
   const [convenetes, setConvenetes] = useState<Convenete[]>([]);
   const [conveneteForm, setConveneteForm] = useState<ConveneteForm>(() => emptyConveneteForm());
   const [editingConveneteId, setEditingConveneteId] = useState<number | null>(null);
+  const [managedUsers, setManagedUsers] = useState<ManagedUser[]>([]);
+  const [adminUserForm, setAdminUserForm] = useState<AdminUserForm>(() => emptyAdminUserForm());
+  const [editingManagedUserId, setEditingManagedUserId] = useState<number | null>(null);
 
   const isAuthenticated = Boolean(token && user);
   const canManageInstruments = user?.role === "ADMIN" || user?.role === "GESTOR";
   const canDeactivateInstruments = user?.role === "ADMIN";
+  const isAdmin = user?.role === "ADMIN";
   const isInstrumentProfileView = activeView === "instrumentos" && instrumentPageId !== null;
 
   const sortedInstruments = useMemo(() => [...instruments].sort((a, b) => a.id - b.id), [instruments]);
@@ -366,6 +504,8 @@ export default function App() {
 
     return null;
   }, [instrumentPageId, sortedInstruments, selectedInstrument]);
+  const currentFlowType: InstrumentFlowType = profileInstrument?.fluxo_tipo ?? "OBRA";
+  const stageLabels = getStageLabels(currentFlowType);
 
   const dashboard = useMemo(() => {
     const totalRegistros = overviewItems.length;
@@ -408,12 +548,29 @@ export default function App() {
     setSelectedInstrument(null);
     setChecklistItems([]);
     setChecklistSummary(null);
+    setStageFollowUps(emptyStageFollowUps());
+    setStageFollowUpText("");
+    setStageFollowUpFiles([]);
+    setStageFollowUpModalStage(null);
+    setStageFollowUpFilter("TODOS");
+    setExpandedFollowUpIds([]);
+    setWorkProgress(null);
+    setChecklistStage("REQUISITOS_CELEBRACAO");
+    setActiveWorkflowStage("REQUISITOS_CELEBRACAO");
+    setObraPercentual("0");
+    setBoletimData(todayDate());
+    setBoletimValor(formatCurrencyInput(0));
+    setBoletimPercentual("");
+    setBoletimObservacao("");
     setEditingId(null);
     setShowCreateInstrumentForm(false);
     setForm(emptyInstrumentForm());
     setConvenetes([]);
     setEditingConveneteId(null);
     setConveneteForm(emptyConveneteForm());
+    setManagedUsers([]);
+    setEditingManagedUserId(null);
+    setAdminUserForm(emptyAdminUserForm());
     setFilters(blankFilters());
     setInstrumentPageId(null);
     if (window.location.pathname !== "/") {
@@ -427,6 +584,14 @@ export default function App() {
     setInstrumentPageId(null);
     setChecklistItems([]);
     setChecklistSummary(null);
+    setStageFollowUps(emptyStageFollowUps());
+    setStageFollowUpText("");
+    setStageFollowUpFiles([]);
+    setStageFollowUpModalStage(null);
+    setStageFollowUpFilter("TODOS");
+    setExpandedFollowUpIds([]);
+    setWorkProgress(null);
+    setActiveWorkflowStage("REQUISITOS_CELEBRACAO");
     if (window.location.pathname !== "/") {
       window.history.pushState({}, "", "/");
     }
@@ -495,6 +660,17 @@ export default function App() {
     setConvenetes(items);
   };
 
+  const loadManagedUsers = async (authToken?: string) => {
+    const currentToken = authToken ?? token;
+    if (!currentToken || !isAdmin) {
+      setManagedUsers([]);
+      return;
+    }
+
+    const items = await listUsersAdmin(currentToken);
+    setManagedUsers(items);
+  };
+
   const loadChecklist = async (instrumentId: number, authToken?: string) => {
     const currentToken = authToken ?? token;
     if (!currentToken) {
@@ -506,6 +682,31 @@ export default function App() {
     setChecklistSummary(data.resumo);
   };
 
+  const loadAllStageFollowUps = async (instrumentId: number, authToken?: string) => {
+    const currentToken = authToken ?? token;
+    if (!currentToken) {
+      return;
+    }
+
+    const responses = await Promise.all(WORKFLOW_STAGES.map((stage) => listStageFollowUps(currentToken, instrumentId, stage)));
+    const next = emptyStageFollowUps();
+    WORKFLOW_STAGES.forEach((stage, index) => {
+      next[stage] = responses[index].itens;
+    });
+    setStageFollowUps(next);
+  };
+
+  const loadWorkProgress = async (instrumentId: number, authToken?: string) => {
+    const currentToken = authToken ?? token;
+    if (!currentToken) {
+      return;
+    }
+
+    const data = await getWorkProgress(currentToken, instrumentId);
+    setWorkProgress(data);
+    setObraPercentual(String(data.percentual_obra));
+  };
+
   const refreshData = async (authToken?: string) => {
     setIsBusy(true);
     setMessage("");
@@ -515,6 +716,11 @@ export default function App() {
         await loadConvenetes(authToken);
       } catch {
         // Intencionalmente ignorado para nao bloquear o modulo de instrumentos.
+      }
+      try {
+        await loadManagedUsers(authToken);
+      } catch {
+        // Intencionalmente ignorado para nao bloquear outras telas.
       }
       setMessage("Dados atualizados com sucesso.");
     } catch (error) {
@@ -529,7 +735,7 @@ export default function App() {
       return;
     }
     void refreshData();
-  }, [isAuthenticated]);
+  }, [isAuthenticated, isAdmin]);
 
   useEffect(() => {
     const onPopState = () => {
@@ -568,13 +774,45 @@ export default function App() {
     if (!isAuthenticated || instrumentPageId === null || !token) {
       setChecklistItems([]);
       setChecklistSummary(null);
+      setStageFollowUps(emptyStageFollowUps());
+      setStageFollowUpText("");
+      setStageFollowUpFiles([]);
+      setStageFollowUpModalStage(null);
+      setStageFollowUpFilter("TODOS");
+      setExpandedFollowUpIds([]);
+      setWorkProgress(null);
       return;
     }
 
-    loadChecklist(instrumentPageId, token).catch((error) => {
-      setMessage(error instanceof Error ? error.message : "Falha ao carregar checklist.");
-    });
+    Promise.all([
+      loadChecklist(instrumentPageId, token),
+      loadWorkProgress(instrumentPageId, token),
+      loadAllStageFollowUps(instrumentPageId, token)
+    ]).catch(
+      (error) => {
+        setMessage(error instanceof Error ? error.message : "Falha ao carregar acompanhamento do instrumento.");
+      }
+    );
   }, [instrumentPageId, isAuthenticated, token]);
+
+  useEffect(() => {
+    if (checklistSummary?.etapa_atual) {
+      setActiveWorkflowStage(checklistSummary.etapa_atual);
+      return;
+    }
+
+    const firstStageWithItems = WORKFLOW_STAGES.find((stage) => checklistItems.some((item) => item.etapa === stage));
+    if (firstStageWithItems) {
+      setActiveWorkflowStage(firstStageWithItems);
+    }
+  }, [checklistSummary?.etapa_atual, checklistItems]);
+
+  useEffect(() => {
+    setStageFollowUpText("");
+    setStageFollowUpFiles([]);
+    setStageFollowUpModalStage(null);
+    setExpandedFollowUpIds([]);
+  }, [activeWorkflowStage]);
 
   const onAddChecklistItem = async (event: FormEvent) => {
     event.preventDefault();
@@ -593,6 +831,7 @@ export default function App() {
     try {
       await addChecklistItem(token, instrumentPageId, {
         nome_documento: nomeDocumento,
+        etapa: checklistStage,
         obrigatorio: checklistRequired,
         observacao: checklistNote.trim() || undefined
       });
@@ -605,42 +844,6 @@ export default function App() {
       setMessage(error instanceof Error ? error.message : "Falha ao adicionar item no checklist.");
     } finally {
       setIsBusy(false);
-    }
-  };
-
-  const onUploadChecklistFile = async (itemId: number, file: File | null) => {
-    if (!token || instrumentPageId === null || !file) {
-      return;
-    }
-
-    setBusyChecklistItemId(itemId);
-    setMessage("");
-    try {
-      await uploadChecklistItemFile(token, instrumentPageId, itemId, file);
-      await loadChecklist(instrumentPageId);
-      setMessage("Documento enviado com sucesso.");
-    } catch (error) {
-      setMessage(error instanceof Error ? error.message : "Falha no upload do documento.");
-    } finally {
-      setBusyChecklistItemId(null);
-    }
-  };
-
-  const onRemoveChecklistFile = async (itemId: number) => {
-    if (!token || instrumentPageId === null) {
-      return;
-    }
-
-    setBusyChecklistItemId(itemId);
-    setMessage("");
-    try {
-      await removeChecklistItemFile(token, instrumentPageId, itemId);
-      await loadChecklist(instrumentPageId);
-      setMessage("Arquivo removido do checklist.");
-    } catch (error) {
-      setMessage(error instanceof Error ? error.message : "Falha ao remover arquivo.");
-    } finally {
-      setBusyChecklistItemId(null);
     }
   };
 
@@ -662,16 +865,129 @@ export default function App() {
     }
   };
 
-  const onDownloadChecklistFile = async (item: ChecklistItem) => {
-    if (!token || instrumentPageId === null || !item.arquivo) {
+  const onUpdateChecklistItemStatus = async (itemId: number, status: ChecklistItemStatus) => {
+    if (!token || instrumentPageId === null || !canManageInstruments) {
+      return;
+    }
+
+    setBusyChecklistItemId(itemId);
+    setMessage("");
+    try {
+      await updateChecklistItem(token, instrumentPageId, itemId, { status });
+      await loadChecklist(instrumentPageId);
+      setMessage("Status do item atualizado.");
+    } catch (error) {
+      setMessage(error instanceof Error ? error.message : "Falha ao atualizar status do checklist.");
+    } finally {
+      setBusyChecklistItemId(null);
+    }
+  };
+
+  const onSaveStageFollowUp = async (stage: WorkflowStage) => {
+    if (!token || instrumentPageId === null || !canManageInstruments) {
+      return;
+    }
+
+    if (stageFollowUpText.trim().length === 0 && stageFollowUpFiles.length === 0) {
+      setMessage("Informe um texto ou envie ao menos um arquivo para registrar acompanhamento.");
+      return;
+    }
+
+    setIsSavingStageFollowUp(true);
+    setMessage("");
+    try {
+      await createStageFollowUp(token, instrumentPageId, stage, {
+        texto: stageFollowUpText,
+        arquivos: stageFollowUpFiles
+      });
+      setStageFollowUpText("");
+      setStageFollowUpFiles([]);
+      setStageFollowUpModalStage(null);
+      await loadAllStageFollowUps(instrumentPageId);
+      setMessage("Acompanhamento da etapa registrado com sucesso.");
+    } catch (error) {
+      setMessage(error instanceof Error ? error.message : "Falha ao registrar acompanhamento da etapa.");
+    } finally {
+      setIsSavingStageFollowUp(false);
+    }
+  };
+
+  const onOpenStageFollowUpModal = (stage: WorkflowStage) => {
+    setStageFollowUpModalStage(stage);
+    setStageFollowUpText("");
+    setStageFollowUpFiles([]);
+    setIsDraggingStageFiles(false);
+  };
+
+  const onCloseStageFollowUpModal = () => {
+    setStageFollowUpModalStage(null);
+    setIsDraggingStageFiles(false);
+  };
+
+  const appendStageFollowUpFiles = (incoming: File[]) => {
+    if (incoming.length === 0) {
+      return;
+    }
+
+    setStageFollowUpFiles((prev) => {
+      const known = new Set(prev.map((file) => `${file.name}|${file.size}|${file.lastModified}`));
+      const next = [...prev];
+      for (const file of incoming) {
+        const key = `${file.name}|${file.size}|${file.lastModified}`;
+        if (!known.has(key)) {
+          next.push(file);
+          known.add(key);
+        }
+      }
+      return next;
+    });
+  };
+
+  const onSelectStageFollowUpFiles = (files: FileList | null) => {
+    appendStageFollowUpFiles(Array.from(files ?? []));
+  };
+
+  const onDropStageFollowUpFiles = (event: DragEvent<HTMLDivElement>) => {
+    event.preventDefault();
+    setIsDraggingStageFiles(false);
+    appendStageFollowUpFiles(Array.from(event.dataTransfer.files ?? []));
+  };
+
+  const onRemoveSelectedStageFollowUpFile = (index: number) => {
+    setStageFollowUpFiles((prev) => prev.filter((_, current) => current !== index));
+  };
+
+  const onDownloadStageFollowUpAttachment = async (stage: WorkflowStage, followUpId: number, fileId: number, name: string) => {
+    if (!token || instrumentPageId === null) {
       return;
     }
 
     try {
-      await downloadChecklistItemFile(token, instrumentPageId, item.id, item.arquivo.nome_original);
+      await downloadStageFollowUpFile(token, instrumentPageId, stage, followUpId, fileId, name);
     } catch (error) {
-      setMessage(error instanceof Error ? error.message : "Falha ao baixar arquivo.");
+      setMessage(error instanceof Error ? error.message : "Falha ao baixar arquivo do acompanhamento.");
     }
+  };
+
+  const onToggleFollowUpText = (followUpId: number) => {
+    setExpandedFollowUpIds((prev) =>
+      prev.includes(followUpId) ? prev.filter((id) => id !== followUpId) : [...prev, followUpId]
+    );
+  };
+
+  const filterStageFollowUps = (items: StageFollowUp[]) => {
+    return items.filter((item) => {
+      if (stageFollowUpFilter === "SO_MEUS") {
+        return user?.email ? item.user.email === user.email : false;
+      }
+      if (stageFollowUpFilter === "COM_ANEXO") {
+        return item.arquivos.length > 0;
+      }
+      if (stageFollowUpFilter === "COM_TEXTO") {
+        return (item.texto ?? "").trim().length > 0;
+      }
+      return true;
+    });
   };
 
   const onStartExecution = async () => {
@@ -696,6 +1012,91 @@ export default function App() {
     }
   };
 
+  const onSaveWorkProgress = async () => {
+    if (!token || instrumentPageId === null || !canManageInstruments) {
+      return;
+    }
+
+    const percentual = Number(obraPercentual);
+    if (Number.isNaN(percentual) || percentual < 0 || percentual > 100) {
+      setMessage("Percentual da obra deve estar entre 0 e 100.");
+      return;
+    }
+
+    setIsBusy(true);
+    setMessage("");
+    try {
+      await updateWorkProgress(token, instrumentPageId, percentual);
+      await loadWorkProgress(instrumentPageId);
+      setMessage("Percentual da obra atualizado.");
+    } catch (error) {
+      setMessage(error instanceof Error ? error.message : "Falha ao atualizar percentual da obra.");
+    } finally {
+      setIsBusy(false);
+    }
+  };
+
+  const onAddMeasurementBulletin = async (event: FormEvent) => {
+    event.preventDefault();
+    if (!token || instrumentPageId === null || !canManageInstruments) {
+      return;
+    }
+
+    const valorMedicao = parseCurrencyInput(boletimValor);
+    if (Number.isNaN(valorMedicao) || valorMedicao < 0) {
+      setMessage("Valor do boletim invalido.");
+      return;
+    }
+
+    const percentualInformado = boletimPercentual.trim() === "" ? undefined : Number(boletimPercentual);
+    if (
+      percentualInformado !== undefined &&
+      (Number.isNaN(percentualInformado) || percentualInformado < 0 || percentualInformado > 100)
+    ) {
+      setMessage("Percentual informado no boletim deve estar entre 0 e 100.");
+      return;
+    }
+
+    setIsBusy(true);
+    setMessage("");
+    try {
+      await addWorkMeasurementBulletin(token, instrumentPageId, {
+        data_boletim: boletimData,
+        valor_medicao: valorMedicao,
+        percentual_obra_informado: percentualInformado,
+        observacao: asOptional(boletimObservacao)
+      });
+      setBoletimValor(formatCurrencyInput(0));
+      setBoletimPercentual("");
+      setBoletimObservacao("");
+      await loadWorkProgress(instrumentPageId);
+      await loadChecklist(instrumentPageId);
+      setMessage("Boletim de medicao cadastrado.");
+    } catch (error) {
+      setMessage(error instanceof Error ? error.message : "Falha ao cadastrar boletim de medicao.");
+    } finally {
+      setIsBusy(false);
+    }
+  };
+
+  const onDeleteMeasurementBulletin = async (boletimId: number) => {
+    if (!token || instrumentPageId === null || !canManageInstruments) {
+      return;
+    }
+
+    setIsBusy(true);
+    setMessage("");
+    try {
+      await deleteWorkMeasurementBulletin(token, instrumentPageId, boletimId);
+      await loadWorkProgress(instrumentPageId);
+      setMessage("Boletim removido.");
+    } catch (error) {
+      setMessage(error instanceof Error ? error.message : "Falha ao remover boletim.");
+    } finally {
+      setIsBusy(false);
+    }
+  };
+
   const onLogin = async (event: FormEvent) => {
     event.preventDefault();
     setIsBusy(true);
@@ -707,22 +1108,6 @@ export default function App() {
       setMessage(`Bem-vindo, ${auth.user.nome}.`);
     } catch (error) {
       setMessage(error instanceof Error ? error.message : "Falha no login.");
-    } finally {
-      setIsBusy(false);
-    }
-  };
-
-  const onRegister = async (event: FormEvent) => {
-    event.preventDefault();
-    setIsBusy(true);
-    setMessage("");
-    try {
-      const auth = await register(nome, email, senha, role);
-      persistAuth(auth.access_token, auth.user);
-      await refreshData(auth.access_token);
-      setMessage(`Conta criada para ${auth.user.nome}.`);
-    } catch (error) {
-      setMessage(error instanceof Error ? error.message : "Falha no cadastro.");
     } finally {
       setIsBusy(false);
     }
@@ -968,6 +1353,72 @@ export default function App() {
     }
   };
 
+  const onChangeAdminUserForm = <K extends keyof AdminUserForm>(field: K, value: AdminUserForm[K]) => {
+    setAdminUserForm((prev) => ({ ...prev, [field]: value }));
+  };
+
+  const clearAdminUserForm = () => {
+    setEditingManagedUserId(null);
+    setAdminUserForm(emptyAdminUserForm());
+  };
+
+  const onEditManagedUser = (item: ManagedUser) => {
+    setEditingManagedUserId(item.id);
+    setAdminUserForm({
+      nome: item.nome,
+      email: item.email,
+      senha: "",
+      role: item.role
+    });
+    setMessage(`Editando usuario #${item.id}.`);
+  };
+
+  const onSaveManagedUser = async (event: FormEvent) => {
+    event.preventDefault();
+    if (!token || !isAdmin) {
+      return;
+    }
+
+    if (adminUserForm.nome.trim() === "" || adminUserForm.email.trim() === "") {
+      setMessage("Preencha nome e email do usuario.");
+      return;
+    }
+
+    if (editingManagedUserId === null && adminUserForm.senha.trim().length < 6) {
+      setMessage("Informe uma senha com pelo menos 6 caracteres.");
+      return;
+    }
+
+    setIsBusy(true);
+    setMessage("");
+    try {
+      if (editingManagedUserId === null) {
+        await createUserAdmin(token, {
+          nome: adminUserForm.nome.trim(),
+          email: adminUserForm.email.trim(),
+          senha: adminUserForm.senha,
+          role: adminUserForm.role
+        });
+        setMessage("Usuario criado com sucesso.");
+      } else {
+        await updateUserAdmin(token, editingManagedUserId, {
+          nome: adminUserForm.nome.trim(),
+          email: adminUserForm.email.trim(),
+          role: adminUserForm.role,
+          senha: adminUserForm.senha.trim() === "" ? undefined : adminUserForm.senha
+        });
+        setMessage("Usuario atualizado com sucesso.");
+      }
+
+      clearAdminUserForm();
+      await loadManagedUsers();
+    } catch (error) {
+      setMessage(error instanceof Error ? error.message : "Falha ao salvar usuario.");
+    } finally {
+      setIsBusy(false);
+    }
+  };
+
   const renderInstrumentForm = () => (
     <div className="card editor-card">
       <h3>{editingId ? `Editar instrumento #${editingId}` : "Novo instrumento"}</h3>
@@ -992,6 +1443,19 @@ export default function App() {
               {convenetes.map((item) => (
                 <option key={item.id} value={item.id}>
                   {item.nome}
+                </option>
+              ))}
+            </select>
+          </label>
+          <label>
+            Tipo de fluxo *
+            <select
+              value={form.fluxo_tipo}
+              onChange={(e) => onChangeForm("fluxo_tipo", e.target.value as InstrumentFlowType)}
+            >
+              {FLOW_TYPE_OPTIONS.map((option) => (
+                <option key={option} value={option}>
+                  {FLOW_TYPE_LABELS[option]}
                 </option>
               ))}
             </select>
@@ -1116,79 +1580,74 @@ export default function App() {
         <header className="hero">
           <div>
             <img className="hero-logo" src={logoSrc} alt="Gestconv360" />
-            <p className="eyebrow">Painel Operacional</p>
-            <h1>Gestconv360</h1>
-            <p className="subtitle">Acesso ao modulo de instrumentos e propostas.</p>
           </div>
           <div className={`health health-${healthStatus}`}>
             API: {healthStatus === "checking" ? "verificando" : healthStatus === "ok" ? "online" : "offline"}
           </div>
         </header>
 
-        <section className="card auth-card">
-          <img className="auth-logo" src={logoSrc} alt="Logo Gestconv360" />
-          <div className="tab-row">
-            <button
-              type="button"
-              className={authMode === "login" ? "tab active" : "tab"}
-              onClick={() => setAuthMode("login")}
-            >
-              Entrar
-            </button>
-            <button
-              type="button"
-              className={authMode === "register" ? "tab active" : "tab"}
-              onClick={() => setAuthMode("register")}
-            >
-              Criar conta
-            </button>
-          </div>
+        <section className="login-layout">
+          <article className="card system-info-card">
+            <h3>Funcionalidades do modulo</h3>
+            <p className="subtitle">Visao completa para ciclo de instrumentos e propostas.</p>
 
-          <form onSubmit={authMode === "login" ? onLogin : onRegister} className="form-grid">
-            {authMode === "register" && (
+            <div className="feature-grid">
+              <div className="feature-item">
+                <p className="eyebrow">Instrumentos</p>
+                <p>CRUD completo com filtros por status, concedente, vigencia e ativo.</p>
+              </div>
+              <div className="feature-item">
+                <p className="eyebrow">Checklist</p>
+                <p>Controle de documentos obrigatorios com upload, download e pendencias.</p>
+              </div>
+              <div className="feature-item">
+                <p className="eyebrow">Auditoria</p>
+                <p>Historico de alteracoes com usuario, data e campos alterados.</p>
+              </div>
+              <div className="feature-item">
+                <p className="eyebrow">Painel</p>
+                <p>KPIs, alertas de prazo e exportacao CSV/Excel para analise rapida.</p>
+              </div>
+            </div>
+
+            <div className="quick-stats">
+              <span>Perfis: ADMIN, GESTOR, CONSULTA</span>
+              <span>Alertas: vigencia e prestacao de contas</span>
+              <span>Seguranca: autenticacao JWT</span>
+            </div>
+          </article>
+
+          <section className="card auth-card">
+            <form onSubmit={onLogin} className="form-grid">
+              <p className="subtitle">Acesso restrito. Novos usuarios sao cadastrados somente por administrador.</p>
+
               <label>
-                Nome
-                <input value={nome} onChange={(e) => setNome(e.target.value)} minLength={2} required />
+                E-mail
+                <input
+                  value={email}
+                  onChange={(e) => setEmail(e.target.value)}
+                  type="email"
+                  placeholder="admin@gestconv360.local"
+                  required
+                />
               </label>
-            )}
 
-            <label>
-              E-mail
-              <input
-                value={email}
-                onChange={(e) => setEmail(e.target.value)}
-                type="email"
-                placeholder="admin@gestconv360.local"
-                required
-              />
-            </label>
-
-            <label>
-              Senha
-              <input
-                value={senha}
-                onChange={(e) => setSenha(e.target.value)}
-                type="password"
-                minLength={6}
-                required
-              />
-            </label>
-
-            {authMode === "register" && (
               <label>
-                Perfil
-                <select value={role} onChange={(e) => setRole(e.target.value as Role)}>
-                  <option value="ADMIN">ADMIN</option>
-                  <option value="GESTOR">GESTOR</option>
-                  <option value="CONSULTA">CONSULTA</option>
-                </select>
+                Senha
+                <input
+                  value={senha}
+                  onChange={(e) => setSenha(e.target.value)}
+                  type="password"
+                  minLength={6}
+                  required
+                />
               </label>
-            )}
 
-            <button type="submit" disabled={isBusy}>
-              {isBusy ? "Processando..." : authMode === "login" ? "Entrar" : "Criar conta"}
-            </button>
-          </form>
+              <button type="submit" disabled={isBusy}>
+                {isBusy ? "Processando..." : "Entrar"}
+              </button>
+            </form>
+          </section>
         </section>
 
         {message && <p className="message">{message}</p>}
@@ -1223,6 +1682,15 @@ export default function App() {
           >
             Convenetes
           </button>
+          {isAdmin && (
+            <button
+              type="button"
+              className={activeView === "usuarios" ? "menu-item active" : "menu-item"}
+              onClick={() => onChangeView("usuarios")}
+            >
+              Usuarios
+            </button>
+          )}
           <button
             type="button"
             className={activeView === "auditoria" ? "menu-item active" : "menu-item"}
@@ -1252,6 +1720,8 @@ export default function App() {
                       : "Instrumentos e Propostas"
                     : activeView === "convenetes"
                       ? "Cadastro de Convenetes"
+                    : activeView === "usuarios"
+                      ? "Gestao de Usuarios"
                     : "Auditoria e Historico"}
               </h2>
               <p className="subtitle">
@@ -1440,6 +1910,9 @@ export default function App() {
                           <strong>Status:</strong> {profileInstrument.status}
                         </p>
                         <p>
+                          <strong>Fluxo:</strong> {FLOW_TYPE_LABELS[profileInstrument.fluxo_tipo]}
+                        </p>
+                        <p>
                           <strong>Concedente:</strong> {profileInstrument.concedente}
                         </p>
                         <p>
@@ -1467,125 +1940,486 @@ export default function App() {
                         </div>
 
                         <div className="checklist-card">
-                        <div className="checklist-head">
-                          <h3>Checklist de celebracao</h3>
-                          {checklistSummary && (
-                            <p className="subtitle">
-                              {checklistSummary.concluidos}/{checklistSummary.total} concluidos | obrigatorios: {" "}
-                              {checklistSummary.obrigatorios_concluidos}/{checklistSummary.obrigatorios}
-                            </p>
-                          )}
-                        </div>
-
-                        {canManageInstruments && (
-                          <form className="checklist-add-form" onSubmit={onAddChecklistItem}>
-                            <input
-                              value={checklistDocName}
-                              onChange={(e) => setChecklistDocName(e.target.value)}
-                              placeholder="Nome do documento"
-                              required
-                            />
-                            <input
-                              value={checklistNote}
-                              onChange={(e) => setChecklistNote(e.target.value)}
-                              placeholder="Observacao (opcional)"
-                            />
-                            <label className="checklist-toggle">
-                              <input
-                                type="checkbox"
-                                checked={checklistRequired}
-                                onChange={(e) => setChecklistRequired(e.target.checked)}
-                              />
-                              Obrigatorio
-                            </label>
-                            <button type="submit" disabled={isBusy}>
-                              Adicionar item
-                            </button>
-                          </form>
-                        )}
-
-                        {checklistItems.length === 0 ? (
-                          <p>Sem checklist cadastrado para este instrumento.</p>
-                        ) : (
-                          <div className="checklist-list">
-                            {checklistItems.map((item) => (
-                              <article key={item.id} className="checklist-item">
-                                <div>
-                                  <p className="checklist-title">
-                                    <span className={item.concluido ? "check-status done" : "check-status"}>
-                                      {item.concluido ? "✓" : "○"}
-                                    </span>
-                                    {item.nome_documento}
-                                    {item.obrigatorio && <span className="check-required">Obrigatorio</span>}
-                                  </p>
-                                  {item.observacao && <p className="subtitle">{item.observacao}</p>}
-                                  <p className="subtitle">
-                                    {item.arquivo ? `Arquivo: ${item.arquivo.nome_original}` : "Sem arquivo enviado"}
-                                  </p>
-                                </div>
-                                <div className="action-row compact checklist-actions">
-                                  {canManageInstruments && (
-                                    <label className="ghost upload-trigger">
-                                      Upload
-                                      <input
-                                        type="file"
-                                        onChange={(e) => onUploadChecklistFile(item.id, e.target.files?.[0] ?? null)}
-                                        disabled={busyChecklistItemId === item.id}
-                                      />
-                                    </label>
-                                  )}
-                                  {item.arquivo && (
-                                    <button
-                                      type="button"
-                                      className="secondary"
-                                      onClick={() => onDownloadChecklistFile(item)}
-                                      disabled={busyChecklistItemId === item.id}
-                                    >
-                                      Baixar
-                                    </button>
-                                  )}
-                                  {canManageInstruments && item.arquivo && (
-                                    <button
-                                      type="button"
-                                      className="ghost"
-                                      onClick={() => onRemoveChecklistFile(item.id)}
-                                      disabled={busyChecklistItemId === item.id}
-                                    >
-                                      Remover arquivo
-                                    </button>
-                                  )}
-                                  {canManageInstruments && (
-                                    <button
-                                      type="button"
-                                      className="danger"
-                                      onClick={() => onDeleteChecklistItem(item.id)}
-                                      disabled={busyChecklistItemId === item.id}
-                                    >
-                                      Excluir item
-                                    </button>
-                                  )}
-                                </div>
-                              </article>
-                            ))}
-                          </div>
-                        )}
-
-                        {profileInstrument.status !== "EM_EXECUCAO" && canManageInstruments && (
-                          <div className="checklist-start-row">
-                            <button
-                              type="button"
-                              onClick={onStartExecution}
-                              disabled={!checklistSummary?.pode_iniciar_execucao || isBusy}
-                            >
-                              Iniciar execucao
-                            </button>
-                            {!checklistSummary?.pode_iniciar_execucao && (
+                          <div className="checklist-head">
+                            <h3>Fluxo de liberacao do recurso federal - {FLOW_TYPE_LABELS[currentFlowType]}</h3>
+                            {checklistSummary && (
                               <p className="subtitle">
-                                Pendencias: {checklistSummary?.pendentes_obrigatorios.join(", ") || "adicione itens obrigatorios"}
+                                {checklistSummary.concluidos}/{checklistSummary.total} concluidos | obrigatorios: {" "}
+                                {checklistSummary.obrigatorios_concluidos}/{checklistSummary.obrigatorios}
                               </p>
                             )}
                           </div>
-                        )}
+
+                          {checklistSummary?.etapa_atual && (
+                            <p className="subtitle">Etapa atual: {stageLabels[checklistSummary.etapa_atual]}</p>
+                          )}
+
+                          {canManageInstruments && (
+                            <form className="checklist-add-form" onSubmit={onAddChecklistItem}>
+                              <select value={checklistStage} onChange={(e) => setChecklistStage(e.target.value as WorkflowStage)}>
+                                {WORKFLOW_STAGES.map((stage) => (
+                                  <option key={stage} value={stage}>
+                                    {stageLabels[stage]}
+                                  </option>
+                                ))}
+                              </select>
+                              <input
+                                value={checklistDocName}
+                                onChange={(e) => setChecklistDocName(e.target.value)}
+                                placeholder="Nome do documento"
+                                required
+                              />
+                              <input
+                                value={checklistNote}
+                                onChange={(e) => setChecklistNote(e.target.value)}
+                                placeholder="Observacao (opcional)"
+                              />
+                              <label className="checklist-toggle">
+                                <input
+                                  type="checkbox"
+                                  checked={checklistRequired}
+                                  onChange={(e) => setChecklistRequired(e.target.checked)}
+                                />
+                                Obrigatorio
+                              </label>
+                              <button type="submit" disabled={isBusy}>
+                                Adicionar item
+                              </button>
+                            </form>
+                          )}
+
+                          {checklistItems.length === 0 ? (
+                            <p>Sem checklist cadastrado para este instrumento.</p>
+                          ) : (
+                            <div className="workflow-stage-list">
+                              {WORKFLOW_STAGES.map((stage) => {
+                                const stageItems = checklistItems.filter((item) => item.etapa === stage);
+                                const stageResume = checklistSummary?.etapas.find((item) => item.etapa === stage);
+                                const isExpanded = activeWorkflowStage === stage;
+                                const allFollowUps = stageFollowUps[stage] ?? [];
+                                const visibleFollowUps = filterStageFollowUps(allFollowUps);
+                                const totalAttachments = allFollowUps.reduce((acc, item) => acc + item.arquivos.length, 0);
+                                const latestFollowUp = allFollowUps[0] ?? null;
+
+                                return (
+                                  <section
+                                    key={stage}
+                                    className={isExpanded ? "workflow-stage-section open" : "workflow-stage-section"}
+                                  >
+                                    <button
+                                      type="button"
+                                      className="workflow-accordion-trigger"
+                                      onClick={() => setActiveWorkflowStage(stage)}
+                                    >
+                                      <div className="workflow-stage-head">
+                                        <h4>{stageLabels[stage]}</h4>
+                                        <span className={isExpanded ? "accordion-indicator open" : "accordion-indicator"}>
+                                          {isExpanded ? "-" : "+"}
+                                        </span>
+                                      </div>
+                                      {stageResume ? (
+                                        <span className={stageResume.concluida ? "stage-badge done" : "stage-badge"}>
+                                          {stageResume.concluida ? "Concluida" : "Pendente"}
+                                        </span>
+                                      ) : (
+                                        <span className="stage-badge">Sem itens</span>
+                                      )}
+                                    </button>
+
+                                    {isExpanded && (
+                                      <div className="workflow-accordion-content">
+                                        {stageResume && (
+                                          <p className="subtitle">
+                                            Obrigatorios: {stageResume.obrigatorios_concluidos}/{stageResume.obrigatorios}
+                                          </p>
+                                        )}
+
+                                        <div className="stage-followup-box">
+                                          <div className="stage-followup-head">
+                                            <h5>Acompanhamento da etapa</h5>
+                                            <div className="stage-followup-stats">
+                                              <span>{allFollowUps.length} registro(s)</span>
+                                              <span>{totalAttachments} anexo(s)</span>
+                                              <span>
+                                                {latestFollowUp
+                                                  ? `Ultimo: ${new Date(latestFollowUp.created_at).toLocaleDateString("pt-BR")}`
+                                                  : "Sem registros"}
+                                              </span>
+                                            </div>
+                                          </div>
+                                          {canManageInstruments && (
+                                            <div className="stage-followup-actions">
+                                              <button type="button" onClick={() => onOpenStageFollowUpModal(stage)}>
+                                                Novo acompanhamento
+                                              </button>
+                                            </div>
+                                          )}
+
+                                          {stageFollowUpModalStage === stage && (
+                                            <div className="stage-followup-modal-overlay" onClick={onCloseStageFollowUpModal}>
+                                              <div className="stage-followup-modal" onClick={(event) => event.stopPropagation()}>
+                                                <div className="stage-followup-modal-head">
+                                                  <h5>Novo acompanhamento</h5>
+                                                  <button
+                                                    type="button"
+                                                    className="ghost compact-link"
+                                                    onClick={onCloseStageFollowUpModal}
+                                                  >
+                                                    Fechar
+                                                  </button>
+                                                </div>
+                                                <p className="subtitle">{stageLabels[stage]}</p>
+                                                <div className="stage-followup-form">
+                                                  <textarea
+                                                    value={stageFollowUpText}
+                                                    onChange={(e) => setStageFollowUpText(e.target.value)}
+                                                    placeholder="Registre observacoes livres sobre o andamento desta etapa"
+                                                    rows={4}
+                                                  />
+                                                  <div
+                                                    className={
+                                                      isDraggingStageFiles
+                                                        ? "stage-followup-dropzone dragging"
+                                                        : "stage-followup-dropzone"
+                                                    }
+                                                    onDragOver={(event) => {
+                                                      event.preventDefault();
+                                                      setIsDraggingStageFiles(true);
+                                                    }}
+                                                    onDragLeave={() => setIsDraggingStageFiles(false)}
+                                                    onDrop={onDropStageFollowUpFiles}
+                                                  >
+                                                    <p>
+                                                      Arraste arquivos aqui ou clique para selecionar
+                                                    </p>
+                                                    <label className="ghost upload-trigger">
+                                                      Selecionar arquivos
+                                                      <input
+                                                        type="file"
+                                                        multiple
+                                                        onChange={(e) => onSelectStageFollowUpFiles(e.target.files)}
+                                                        disabled={isSavingStageFollowUp}
+                                                      />
+                                                    </label>
+                                                  </div>
+                                                  <div className="stage-followup-selected-files">
+                                                    {stageFollowUpFiles.length > 0
+                                                      ? `${stageFollowUpFiles.length} arquivo(s) selecionado(s)`
+                                                      : "Nenhum arquivo selecionado"}
+                                                  </div>
+                                                  {stageFollowUpFiles.length > 0 && (
+                                                    <div className="stage-followup-selected-list">
+                                                      {stageFollowUpFiles.map((file, index) => (
+                                                        <div key={`${file.name}-${file.lastModified}-${index}`} className="stage-followup-selected-item">
+                                                          <span>{file.name}</span>
+                                                          <span className="subtitle">{formatFileSize(file.size)}</span>
+                                                          <button
+                                                            type="button"
+                                                            className="ghost compact-link"
+                                                            onClick={() => onRemoveSelectedStageFollowUpFile(index)}
+                                                            disabled={isSavingStageFollowUp}
+                                                          >
+                                                            Remover
+                                                          </button>
+                                                        </div>
+                                                      ))}
+                                                    </div>
+                                                  )}
+                                                  <div className="action-row compact">
+                                                    <button
+                                                      type="button"
+                                                      className="ghost"
+                                                      onClick={onCloseStageFollowUpModal}
+                                                      disabled={isSavingStageFollowUp}
+                                                    >
+                                                      Cancelar
+                                                    </button>
+                                                    <button
+                                                      type="button"
+                                                      onClick={() => onSaveStageFollowUp(stage)}
+                                                      disabled={isSavingStageFollowUp}
+                                                    >
+                                                      Salvar acompanhamento
+                                                    </button>
+                                                  </div>
+                                                </div>
+                                              </div>
+                                            </div>
+                                          )}
+
+                                          <div className="stage-followup-toolbar">
+                                            <label>
+                                              Filtro
+                                              <select
+                                                value={stageFollowUpFilter}
+                                                onChange={(e) => setStageFollowUpFilter(e.target.value as StageFollowUpFilter)}
+                                              >
+                                                {(Object.keys(STAGE_FOLLOW_UP_FILTER_LABELS) as StageFollowUpFilter[]).map(
+                                                  (option) => (
+                                                    <option key={option} value={option}>
+                                                      {STAGE_FOLLOW_UP_FILTER_LABELS[option]}
+                                                    </option>
+                                                  )
+                                                )}
+                                              </select>
+                                            </label>
+                                            <p className="subtitle">Mostrando {visibleFollowUps.length} registro(s)</p>
+                                          </div>
+
+                                          <div className="stage-followup-history">
+                                            {visibleFollowUps.length === 0 ? (
+                                              <p className="subtitle">Sem registros de acompanhamento nesta etapa.</p>
+                                            ) : (
+                                              visibleFollowUps.map((followUp) => (
+                                                <article key={followUp.id} className="stage-followup-item">
+                                                  <div className="stage-followup-item-head">
+                                                    <p className="subtitle">
+                                                      <strong>
+                                                        {followUp.user.nome
+                                                          ? `${followUp.user.nome} (${followUp.user.email})`
+                                                          : followUp.user.email}
+                                                      </strong>{" "}
+                                                      • {new Date(followUp.created_at).toLocaleString("pt-BR")}
+                                                    </p>
+                                                    <span className="stage-badge">
+                                                      {followUp.texto && followUp.arquivos.length > 0
+                                                        ? "Texto + anexo"
+                                                        : followUp.arquivos.length > 0
+                                                          ? "Anexo"
+                                                          : "Texto"}
+                                                    </span>
+                                                  </div>
+                                                  {followUp.texto && (
+                                                    <div>
+                                                      <p
+                                                        className={
+                                                          expandedFollowUpIds.includes(followUp.id)
+                                                            ? "stage-followup-text"
+                                                            : "stage-followup-text compact"
+                                                        }
+                                                      >
+                                                        {expandedFollowUpIds.includes(followUp.id)
+                                                          ? followUp.texto
+                                                          : summarizeText(followUp.texto, 180)}
+                                                      </p>
+                                                      {followUp.texto.length > 180 && (
+                                                        <button
+                                                          type="button"
+                                                          className="ghost compact-link"
+                                                          onClick={() => onToggleFollowUpText(followUp.id)}
+                                                        >
+                                                          {expandedFollowUpIds.includes(followUp.id)
+                                                            ? "Mostrar menos"
+                                                            : "Ver mais"}
+                                                        </button>
+                                                      )}
+                                                    </div>
+                                                  )}
+                                                  {followUp.arquivos.length > 0 && (
+                                                    <div className="stage-followup-files">
+                                                      {followUp.arquivos.map((file) => (
+                                                        <button
+                                                          key={file.id}
+                                                          type="button"
+                                                          className="secondary"
+                                                          onClick={() =>
+                                                            onDownloadStageFollowUpAttachment(
+                                                              stage,
+                                                              followUp.id,
+                                                              file.id,
+                                                              file.nome_original
+                                                            )
+                                                          }
+                                                        >
+                                                          Baixar {file.nome_original}
+                                                        </button>
+                                                      ))}
+                                                    </div>
+                                                  )}
+                                                </article>
+                                              ))
+                                            )}
+                                          </div>
+                                        </div>
+
+                                        {stageItems.length === 0 ? (
+                                          <p className="subtitle">Nenhum item cadastrado nesta etapa.</p>
+                                        ) : (
+                                          <div className="checklist-list">
+                                            {stageItems.map((item) => {
+                                              const done =
+                                                item.concluido || item.status === "CONCLUIDO" || item.status === "ACEITO";
+                                              return (
+                                                <article key={item.id} className="checklist-item">
+                                                  <div>
+                                                    <p className="checklist-title">
+                                                      <span className={done ? "check-status done" : "check-status"}>
+                                                        {done ? "✓" : "○"}
+                                                      </span>
+                                                      {item.nome_documento}
+                                                      {item.obrigatorio && <span className="check-required">Obrigatorio</span>}
+                                                    </p>
+                                                    <p className="subtitle">Status: {CHECKLIST_STATUS_LABELS[item.status]}</p>
+                                                    {item.observacao && <p className="subtitle">{item.observacao}</p>}
+                                                  </div>
+                                                  <div className="action-row compact checklist-actions">
+                                                    {canManageInstruments && (
+                                                      <select
+                                                        value={item.status}
+                                                        onChange={(e) =>
+                                                          onUpdateChecklistItemStatus(
+                                                            item.id,
+                                                            e.target.value as ChecklistItemStatus
+                                                          )
+                                                        }
+                                                        disabled={busyChecklistItemId === item.id}
+                                                      >
+                                                        {CHECKLIST_STATUS_OPTIONS.map((option) => (
+                                                          <option key={option} value={option}>
+                                                            {CHECKLIST_STATUS_LABELS[option]}
+                                                          </option>
+                                                        ))}
+                                                      </select>
+                                                    )}
+                                                    {canManageInstruments && (
+                                                      <button
+                                                        type="button"
+                                                        className="danger"
+                                                        onClick={() => onDeleteChecklistItem(item.id)}
+                                                        disabled={busyChecklistItemId === item.id}
+                                                      >
+                                                        Excluir item
+                                                      </button>
+                                                    )}
+                                                  </div>
+                                                </article>
+                                              );
+                                            })}
+                                          </div>
+                                        )}
+                                      </div>
+                                    )}
+                                  </section>
+                                );
+                              })}
+                            </div>
+                          )}
+
+                          {profileInstrument.status !== "EM_EXECUCAO" && canManageInstruments && (
+                            <div className="checklist-start-row">
+                              <button
+                                type="button"
+                                onClick={onStartExecution}
+                                disabled={!checklistSummary?.pode_iniciar_execucao || isBusy}
+                              >
+                                Iniciar execucao
+                              </button>
+                              {!checklistSummary?.pode_iniciar_execucao && (
+                                <p className="subtitle">
+                                  Pendencias: {checklistSummary?.pendentes_obrigatorios.join(", ") || "adicione itens obrigatorios"}
+                                </p>
+                              )}
+                            </div>
+                          )}
+
+                          <div className="work-progress-card">
+                            <h3>Acompanhamento de obra</h3>
+                            <p className="subtitle">
+                              Percentual atual: {workProgress ? `${workProgress.percentual_obra.toFixed(2)}%` : "0.00%"} | Total
+                              boletins: {formatCurrency(workProgress?.valor_total_boletins ?? 0)}
+                            </p>
+
+                            {canManageInstruments && (
+                              <div className="action-row compact">
+                                <input
+                                  type="number"
+                                  min="0"
+                                  max="100"
+                                  step="0.01"
+                                  value={obraPercentual}
+                                  onChange={(e) => setObraPercentual(e.target.value)}
+                                  placeholder="Percentual da obra"
+                                />
+                                <button type="button" onClick={onSaveWorkProgress} disabled={isBusy}>
+                                  Salvar percentual
+                                </button>
+                              </div>
+                            )}
+
+                            {canManageInstruments && (
+                              <form className="checklist-add-form" onSubmit={onAddMeasurementBulletin}>
+                                <input type="date" value={boletimData} onChange={(e) => setBoletimData(e.target.value)} required />
+                                <input
+                                  type="text"
+                                  inputMode="numeric"
+                                  value={boletimValor}
+                                  onChange={(e) => setBoletimValor(normalizeCurrencyInput(e.target.value))}
+                                  placeholder="Valor do boletim"
+                                  required
+                                />
+                                <input
+                                  type="number"
+                                  min="0"
+                                  max="100"
+                                  step="0.01"
+                                  value={boletimPercentual}
+                                  onChange={(e) => setBoletimPercentual(e.target.value)}
+                                  placeholder="% obra (opcional)"
+                                />
+                                <input
+                                  value={boletimObservacao}
+                                  onChange={(e) => setBoletimObservacao(e.target.value)}
+                                  placeholder="Observacao"
+                                />
+                                <button type="submit" disabled={isBusy}>
+                                  Adicionar boletim
+                                </button>
+                              </form>
+                            )}
+
+                            {workProgress && workProgress.boletins.length > 0 ? (
+                              <div className="table-wrap">
+                                <table>
+                                  <thead>
+                                    <tr>
+                                      <th>Data</th>
+                                      <th>Valor</th>
+                                      <th>% obra</th>
+                                      <th>Observacao</th>
+                                      {canManageInstruments && <th>Acoes</th>}
+                                    </tr>
+                                  </thead>
+                                  <tbody>
+                                    {workProgress.boletins.map((item) => (
+                                      <tr key={item.id}>
+                                        <td>{item.data_boletim}</td>
+                                        <td>{formatCurrency(item.valor_medicao)}</td>
+                                        <td>
+                                          {item.percentual_obra_informado === null
+                                            ? "-"
+                                            : `${item.percentual_obra_informado.toFixed(2)}%`}
+                                        </td>
+                                        <td>{item.observacao ?? "-"}</td>
+                                        {canManageInstruments && (
+                                          <td>
+                                            <button
+                                              type="button"
+                                              className="danger"
+                                              onClick={() => onDeleteMeasurementBulletin(item.id)}
+                                            >
+                                              Excluir
+                                            </button>
+                                          </td>
+                                        )}
+                                      </tr>
+                                    ))}
+                                  </tbody>
+                                </table>
+                              </div>
+                            ) : (
+                              <p className="subtitle">Nenhum boletim de medicao cadastrado.</p>
+                            )}
+                          </div>
                         </div>
                       </>
                     )}
@@ -1784,6 +2618,113 @@ export default function App() {
                   </table>
                 </div>
               </div>
+            </section>
+          ) : activeView === "usuarios" ? (
+            <section className="dashboard">
+              {isAdmin ? (
+                <>
+                  <div className="card editor-card">
+                    <h3>{editingManagedUserId ? `Editar usuario #${editingManagedUserId}` : "Novo usuario"}</h3>
+                    <form className="form-grid" onSubmit={onSaveManagedUser}>
+                      <div className="filters-grid columns-4">
+                        <label>
+                          Nome *
+                          <input
+                            value={adminUserForm.nome}
+                            onChange={(e) => onChangeAdminUserForm("nome", e.target.value)}
+                            required
+                          />
+                        </label>
+                        <label>
+                          E-mail *
+                          <input
+                            type="email"
+                            value={adminUserForm.email}
+                            onChange={(e) => onChangeAdminUserForm("email", e.target.value)}
+                            required
+                          />
+                        </label>
+                        <label>
+                          Perfil *
+                          <select
+                            value={adminUserForm.role}
+                            onChange={(e) => onChangeAdminUserForm("role", e.target.value as Role)}
+                          >
+                            <option value="ADMIN">ADMIN</option>
+                            <option value="GESTOR">GESTOR</option>
+                            <option value="CONSULTA">CONSULTA</option>
+                          </select>
+                        </label>
+                        <label>
+                          Senha {editingManagedUserId ? "(opcional)" : "*"}
+                          <input
+                            type="password"
+                            minLength={6}
+                            value={adminUserForm.senha}
+                            onChange={(e) => onChangeAdminUserForm("senha", e.target.value)}
+                            required={editingManagedUserId === null}
+                          />
+                        </label>
+                      </div>
+
+                      <div className="action-row">
+                        <button type="submit" disabled={isBusy}>
+                          {editingManagedUserId ? "Salvar alteracoes" : "Criar usuario"}
+                        </button>
+                        <button type="button" className="secondary" onClick={clearAdminUserForm}>
+                          Limpar formulario
+                        </button>
+                      </div>
+                    </form>
+                  </div>
+
+                  <div className="card table-card">
+                    <h3>Usuarios cadastrados</h3>
+                    <div className="table-wrap">
+                      <table>
+                        <thead>
+                          <tr>
+                            <th>ID</th>
+                            <th>Nome</th>
+                            <th>E-mail</th>
+                            <th>Perfil</th>
+                            <th>Criado em</th>
+                            <th>Acoes</th>
+                          </tr>
+                        </thead>
+                        <tbody>
+                          {managedUsers.length === 0 ? (
+                            <tr>
+                              <td colSpan={6}>Nenhum usuario cadastrado.</td>
+                            </tr>
+                          ) : (
+                            managedUsers.map((item) => (
+                              <tr key={item.id}>
+                                <td>{item.id}</td>
+                                <td>{item.nome}</td>
+                                <td>{item.email}</td>
+                                <td>{item.role}</td>
+                                <td>{new Date(item.created_at).toLocaleString("pt-BR")}</td>
+                                <td>
+                                  <div className="action-row compact">
+                                    <button type="button" onClick={() => onEditManagedUser(item)}>
+                                      Editar
+                                    </button>
+                                  </div>
+                                </td>
+                              </tr>
+                            ))
+                          )}
+                        </tbody>
+                      </table>
+                    </div>
+                  </div>
+                </>
+              ) : (
+                <div className="card table-card">
+                  <p>Acesso restrito a administradores.</p>
+                </div>
+              )}
             </section>
           ) : (
             <section className="dashboard">

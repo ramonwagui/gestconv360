@@ -12,9 +12,16 @@ import {
   alertQuerySchema,
   checklistItemCreateSchema,
   checklistItemIdParamSchema,
+  stageParamSchema,
+  stageFollowUpCreateSchema,
+  stageFollowUpFileIdParamSchema,
+  stageFollowUpIdParamSchema,
+  measurementCreateSchema,
+  measurementIdParamSchema,
   checklistItemUpdateSchema,
   createInstrumentSchema,
   listQuerySchema,
+  workProgressUpdateSchema,
   updateInstrumentSchema
 } from "./instrumentos.schema";
 import {
@@ -23,25 +30,34 @@ import {
   type AuditSnapshot
 } from "../auditoria/auditoria.service";
 import {
+  createMeasurementBulletin,
   createInstrument,
   createChecklistItem,
   deleteChecklistItem,
+  deleteMeasurementBulletin,
   getChecklistItemById,
   getChecklistSummary,
   deactivateInstrument,
   getDeadlineAlerts,
   getInstrumentById,
+  getStageFollowUpFileById,
+  getWorkProgress,
+  listStageFollowUps,
   listChecklistItems,
   listInstruments,
+  syncAllExistingWorkflowChecklists,
+  createStageFollowUp,
   clearChecklistItemUpload,
   updateChecklistItem,
   updateChecklistItemUpload,
+  updateWorkProgress,
   updateInstrument
 } from "./instrumentos.service";
 
 const router = Router();
 
 const uploadRootPath = path.resolve(process.cwd(), "uploads", "instrumentos");
+const stageFollowUpUploadRootPath = path.join(uploadRootPath, "stage-followups");
 const allowedUploadMimes = new Set([
   "application/pdf",
   "application/msword",
@@ -121,6 +137,7 @@ const snapshotInstrument = (item: Awaited<ReturnType<typeof getInstrumentById>>)
       : null,
     data_dou: item.dataDou ? item.dataDou.toISOString().slice(0, 10) : null,
     concedente: item.concedente,
+    fluxo_tipo: item.fluxoTipo,
     convenete_id: item.conveneteId,
     status: item.status,
     responsavel: item.responsavel,
@@ -137,6 +154,8 @@ const mapChecklistItem = (instrumentId: number, item: Awaited<ReturnType<typeof 
 
   return {
     id: item.id,
+    etapa: item.etapa,
+    status: item.status,
     nome_documento: item.nomeDocumento,
     obrigatorio: item.obrigatorio,
     concluido: item.concluido,
@@ -152,6 +171,37 @@ const mapChecklistItem = (instrumentId: number, item: Awaited<ReturnType<typeof 
             download_path: `/api/v1/instrumentos/${instrumentId}/checklist/${item.id}/download`
           }
         : null,
+    created_at: item.createdAt.toISOString(),
+    updated_at: item.updatedAt.toISOString()
+  };
+};
+
+const mapStageFollowUp = (
+  instrumentId: number,
+  stage: string,
+  item: Awaited<ReturnType<typeof createStageFollowUp>>
+) => {
+  if (!item) {
+    return null;
+  }
+
+  return {
+    id: item.id,
+    etapa: item.etapa,
+    texto: item.texto,
+    user: {
+      id: item.user?.id ?? item.userId ?? null,
+      nome: item.user?.nome ?? null,
+      email: item.user?.email ?? item.userEmail
+    },
+    arquivos: item.files.map((file) => ({
+      id: file.id,
+      nome_original: file.arquivoNomeOriginal,
+      mime_type: file.arquivoMimeType,
+      tamanho: file.arquivoTamanho,
+      created_at: file.createdAt.toISOString(),
+      download_path: `/api/v1/instrumentos/${instrumentId}/stages/${stage}/follow-ups/${item.id}/files/${file.id}/download`
+    })),
     created_at: item.createdAt.toISOString(),
     updated_at: item.updatedAt.toISOString()
   };
@@ -279,6 +329,161 @@ router.get(
   }
 );
 
+router.get(
+  "/:id/stages/:stage/follow-ups",
+  authorizeRoles(UserRole.ADMIN, UserRole.GESTOR, UserRole.CONSULTA),
+  async (req, res) => {
+    const id = Number(req.params.id);
+    if (Number.isNaN(id)) {
+      return res.status(400).json({ message: "ID invalido." });
+    }
+
+    const stageParam = stageParamSchema.safeParse(req.params);
+    if (!stageParam.success) {
+      return res.status(400).json({ message: "Etapa invalida." });
+    }
+
+    const existing = await getInstrumentById(id);
+    if (!existing) {
+      return res.status(404).json({ message: "Registro nao encontrado." });
+    }
+
+    const items = await listStageFollowUps(id, stageParam.data.stage);
+    return res.json({
+      itens: items
+        .map((item) => mapStageFollowUp(id, stageParam.data.stage, item))
+        .filter((item) => item !== null)
+    });
+  }
+);
+
+router.post(
+  "/:id/stages/:stage/follow-ups",
+  authorizeRoles(UserRole.ADMIN, UserRole.GESTOR),
+  upload.array("arquivos", 10),
+  async (req, res) => {
+    const id = Number(req.params.id);
+    if (Number.isNaN(id)) {
+      return res.status(400).json({ message: "ID invalido." });
+    }
+
+    const stageParam = stageParamSchema.safeParse(req.params);
+    if (!stageParam.success) {
+      return res.status(400).json({ message: "Etapa invalida." });
+    }
+
+    if (!req.user) {
+      return res.status(401).json({ message: "Usuario nao autenticado." });
+    }
+
+    const existing = await getInstrumentById(id);
+    if (!existing) {
+      return res.status(404).json({ message: "Registro nao encontrado." });
+    }
+
+    const files = (req.files as Express.Multer.File[] | undefined) ?? [];
+    const parsedBody = stageFollowUpCreateSchema.safeParse({ texto: req.body?.texto });
+    if (!parsedBody.success && files.length === 0) {
+      return res.status(422).json({
+        message: "Payload invalido",
+        issues: parsedBody.error.flatten()
+      });
+    }
+
+    if ((req.body?.texto ?? "").toString().trim().length === 0 && files.length === 0) {
+      return res.status(422).json({
+        message: "Informe um texto ou envie ao menos um arquivo para registrar acompanhamento."
+      });
+    }
+
+    await fs.mkdir(stageFollowUpUploadRootPath, { recursive: true });
+
+    const stagedFiles: Array<{
+      arquivoPath: string;
+      arquivoNomeOriginal: string;
+      arquivoMimeType?: string;
+      arquivoTamanho?: number;
+    }> = [];
+
+    try {
+      for (const file of files) {
+        const extension = path.extname(file.originalname).toLowerCase();
+        const safeName = `${id}-${stageParam.data.stage}-${Date.now()}-${randomUUID()}${extension}`;
+        const destination = path.join(stageFollowUpUploadRootPath, safeName);
+        await fs.writeFile(destination, file.buffer);
+        stagedFiles.push({
+          arquivoPath: destination,
+          arquivoNomeOriginal: file.originalname,
+          arquivoMimeType: file.mimetype,
+          arquivoTamanho: file.size
+        });
+      }
+
+      const created = await createStageFollowUp(id, stageParam.data.stage, {
+        texto: req.body?.texto,
+        userId: req.user.id,
+        userEmail: req.user.email,
+        files: stagedFiles
+      });
+
+      return res.status(201).json(mapStageFollowUp(id, stageParam.data.stage, created));
+    } catch (error) {
+      await Promise.all(stagedFiles.map((file) => fs.unlink(file.arquivoPath).catch(() => undefined)));
+
+      if (error instanceof Error && error.message === "STAGE_FOLLOW_UP_EMPTY") {
+        return res.status(422).json({
+          message: "Informe um texto ou envie ao menos um arquivo para registrar acompanhamento."
+        });
+      }
+
+      return res.status(500).json({ message: "Erro interno ao registrar acompanhamento da etapa." });
+    }
+  }
+);
+
+router.get(
+  "/:id/stages/:stage/follow-ups/:followUpId/files/:fileId/download",
+  authorizeRoles(UserRole.ADMIN, UserRole.GESTOR, UserRole.CONSULTA),
+  async (req, res) => {
+    const id = Number(req.params.id);
+    if (Number.isNaN(id)) {
+      return res.status(400).json({ message: "ID invalido." });
+    }
+
+    const stageParam = stageParamSchema.safeParse(req.params);
+    if (!stageParam.success) {
+      return res.status(400).json({ message: "Etapa invalida." });
+    }
+
+    const followUpIdParam = stageFollowUpIdParamSchema.safeParse(req.params);
+    if (!followUpIdParam.success) {
+      return res.status(400).json({ message: "Acompanhamento invalido." });
+    }
+
+    const fileIdParam = stageFollowUpFileIdParamSchema.safeParse(req.params);
+    if (!fileIdParam.success) {
+      return res.status(400).json({ message: "Arquivo invalido." });
+    }
+
+    const file = await getStageFollowUpFileById(
+      id,
+      stageParam.data.stage,
+      followUpIdParam.data.followUpId,
+      fileIdParam.data.fileId
+    );
+    if (!file) {
+      return res.status(404).json({ message: "Arquivo nao encontrado." });
+    }
+
+    try {
+      await fs.access(file.arquivoPath);
+      return res.download(file.arquivoPath, file.arquivoNomeOriginal);
+    } catch {
+      return res.status(404).json({ message: "Arquivo nao encontrado." });
+    }
+  }
+);
+
 router.post("/:id/checklist", authorizeRoles(UserRole.ADMIN, UserRole.GESTOR), async (req, res) => {
   const id = Number(req.params.id);
   if (Number.isNaN(id)) {
@@ -327,6 +532,11 @@ router.patch("/:id/checklist/:itemId", authorizeRoles(UserRole.ADMIN, UserRole.G
   } catch (error) {
     if (error instanceof Error && error.message === "CHECKLIST_ITEM_NOT_FOUND") {
       return res.status(404).json({ message: "Item de checklist nao encontrado." });
+    }
+    if (error instanceof Error && error.message === "CHECKLIST_STAGE_BLOCKED") {
+      return res.status(422).json({
+        message: "Etapa bloqueada. Conclua os itens obrigatorios das etapas anteriores para avancar."
+      });
     }
     return res.status(500).json({ message: "Erro interno ao atualizar item do checklist." });
   }
@@ -434,6 +644,97 @@ router.delete(
 );
 
 router.get(
+  "/:id/work-progress",
+  authorizeRoles(UserRole.ADMIN, UserRole.GESTOR, UserRole.CONSULTA),
+  async (req, res) => {
+    const id = Number(req.params.id);
+    if (Number.isNaN(id)) {
+      return res.status(400).json({ message: "ID invalido." });
+    }
+
+    const existing = await getInstrumentById(id);
+    if (!existing) {
+      return res.status(404).json({ message: "Registro nao encontrado." });
+    }
+
+    const progress = await getWorkProgress(id);
+    return res.json(progress);
+  }
+);
+
+router.put("/:id/work-progress", authorizeRoles(UserRole.ADMIN, UserRole.GESTOR), async (req, res) => {
+  const id = Number(req.params.id);
+  if (Number.isNaN(id)) {
+    return res.status(400).json({ message: "ID invalido." });
+  }
+
+  const existing = await getInstrumentById(id);
+  if (!existing) {
+    return res.status(404).json({ message: "Registro nao encontrado." });
+  }
+
+  const parsed = workProgressUpdateSchema.safeParse(req.body);
+  if (!parsed.success) {
+    return res.status(422).json({
+      message: "Payload invalido",
+      issues: parsed.error.flatten()
+    });
+  }
+
+  const updated = await updateWorkProgress(id, parsed.data);
+  return res.json(updated);
+});
+
+router.post("/:id/work-progress/boletins", authorizeRoles(UserRole.ADMIN, UserRole.GESTOR), async (req, res) => {
+  const id = Number(req.params.id);
+  if (Number.isNaN(id)) {
+    return res.status(400).json({ message: "ID invalido." });
+  }
+
+  const existing = await getInstrumentById(id);
+  if (!existing) {
+    return res.status(404).json({ message: "Registro nao encontrado." });
+  }
+
+  const parsed = measurementCreateSchema.safeParse(req.body);
+  if (!parsed.success) {
+    return res.status(422).json({
+      message: "Payload invalido",
+      issues: parsed.error.flatten()
+    });
+  }
+
+  const created = await createMeasurementBulletin(id, parsed.data);
+  return res.status(201).json(created);
+});
+
+router.delete(
+  "/:id/work-progress/boletins/:boletimId",
+  authorizeRoles(UserRole.ADMIN, UserRole.GESTOR),
+  async (req, res) => {
+    const id = Number(req.params.id);
+    if (Number.isNaN(id)) {
+      return res.status(400).json({ message: "ID invalido." });
+    }
+
+    const parsed = measurementIdParamSchema.safeParse(req.params);
+    if (!parsed.success) {
+      return res.status(400).json({ message: "Boletim invalido." });
+    }
+
+    try {
+      await deleteMeasurementBulletin(id, parsed.data.boletimId);
+      return res.status(204).send();
+    } catch (error) {
+      if (error instanceof Error && error.message === "MEASUREMENT_NOT_FOUND") {
+        return res.status(404).json({ message: "Boletim nao encontrado." });
+      }
+      return res.status(500).json({ message: "Erro interno ao remover boletim." });
+    }
+  }
+);
+
+router.get(
   "/:id/checklist/:itemId/download",
   authorizeRoles(UserRole.ADMIN, UserRole.GESTOR, UserRole.CONSULTA),
   async (req, res) => {
@@ -457,6 +758,22 @@ router.get(
       return res.download(item.arquivoPath, item.arquivoNomeOriginal);
     } catch {
       return res.status(404).json({ message: "Arquivo nao encontrado." });
+    }
+  }
+);
+
+router.post(
+  "/checklist/sync-existing",
+  authorizeRoles(UserRole.ADMIN),
+  async (_req, res) => {
+    try {
+      const result = await syncAllExistingWorkflowChecklists();
+      return res.json({
+        message: "Checklist sincronizado para instrumentos existentes.",
+        ...result
+      });
+    } catch {
+      return res.status(500).json({ message: "Erro interno ao sincronizar checklist existente." });
     }
   }
 );

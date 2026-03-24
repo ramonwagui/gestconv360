@@ -1,4 +1,5 @@
 import "express-async-errors";
+import "./config/env";
 import cors from "cors";
 import express, { ErrorRequestHandler } from "express";
 import helmet from "helmet";
@@ -8,6 +9,7 @@ import { authRouter } from "./modules/auth/auth.routes";
 import { auditoriaRouter } from "./modules/auditoria/auditoria.routes";
 import { convenetesRouter } from "./modules/convenetes/convenetes.routes";
 import { instrumentosRouter } from "./modules/instrumentos/instrumentos.routes";
+import { usuariosRouter } from "./modules/usuarios/usuarios.routes";
 
 export const app = express();
 
@@ -32,6 +34,7 @@ app.get("/", (_req, res) => {
       <li><code>/api/v1/auth</code></li>
       <li><code>/api/v1/instrumentos</code></li>
       <li><code>/api/v1/convenetes</code></li>
+      <li><code>/api/v1/usuarios</code></li>
     </ul>
   </body>
 </html>`);
@@ -45,6 +48,7 @@ app.use("/api/v1/auth", authRouter);
 app.use("/api/v1/instrumentos", instrumentosRouter);
 app.use("/api/v1/auditoria", auditoriaRouter);
 app.use("/api/v1/convenetes", convenetesRouter);
+app.use("/api/v1/usuarios", usuariosRouter);
 
 const errorHandler: ErrorRequestHandler = (error, req, res, _next) => {
   // eslint-disable-next-line no-console

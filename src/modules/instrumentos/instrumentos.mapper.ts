@@ -22,6 +22,7 @@ export const mapInstrument = (item: InstrumentProposal) => ({
   data_prestacao_contas: toDateOnly(item.dataPrestacaoContas),
   data_dou: toDateOnly(item.dataDou),
   concedente: item.concedente,
+  fluxo_tipo: item.fluxoTipo,
   convenete_id: item.conveneteId,
   status: item.status,
   responsavel: item.responsavel,
