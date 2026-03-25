@@ -186,6 +186,7 @@ export const createTicket = async (
   input: CreateTicketInput,
   payload: {
     createdByUserId: number;
+    source?: TicketSource;
   }
 ) => {
   for (let attempt = 0; attempt < 5; attempt += 1) {
@@ -200,7 +201,7 @@ export const createTicket = async (
             descricao: input.descricao,
             status: input.status ?? TicketStatus.ABERTO,
             prioridade: input.prioridade,
-            origem: TicketSource.MANUAL,
+            origem: payload.source ?? TicketSource.MANUAL,
             prazoAlvo: parseOptionalDate(input.prazo_alvo),
             resolvidoEm: isResolvedStatus(input.status ?? TicketStatus.ABERTO) ? new Date() : null,
             motivoResolucao: isResolvedStatus(input.status ?? TicketStatus.ABERTO) ? input.motivo_resolucao ?? null : null,

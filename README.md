@@ -85,6 +85,20 @@ npm run test:tickets-regression
 
 Tambem foi adicionado workflow de CI em `.github/workflows/quality-check.yml` para executar essas verificacoes em push/PR.
 
+## Tickets por Gmail (polling)
+
+O sistema suporta abertura automatica de tickets por email via Gmail API (1 ticket por mensagem).
+
+- Configure as variaveis `GMAIL_*` no `.env`.
+- Ative com `GMAIL_TICKET_INGESTION_ENABLED="true"`.
+- A ingestao roda por polling no backend (`GMAIL_TICKET_POLL_INTERVAL_MS`).
+- Remetentes fora de `GMAIL_TICKET_ALLOWED_DOMAINS` sao ignorados e registrados em log de ingestao.
+
+Endpoints administrativos (somente ADMIN):
+
+- `GET /api/v1/tickets-email/status`
+- `POST /api/v1/tickets-email/sync`
+
 ## URL principal
 
 - API: `http://localhost:3000`

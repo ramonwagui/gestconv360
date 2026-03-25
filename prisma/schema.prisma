@@ -70,6 +70,12 @@ enum TicketPriority {
   CRITICA
 }
 
+enum TicketEmailIngestionStatus {
+  CRIADO
+  IGNORADO
+  ERRO
+}
+
 model User {
   id           Int      @id @default(autoincrement())
   nome         String
@@ -157,6 +163,7 @@ model Ticket {
   responsavelUser User?               @relation("TicketAssignedTo", fields: [responsavelUserId], references: [id], onDelete: SetNull)
   createdByUser   User                @relation("TicketCreatedBy", fields: [createdByUserId], references: [id])
   comments        TicketComment[]
+  emailIngestions TicketEmailIngestion[]
 
   @@index([status])
   @@index([origem])
@@ -164,6 +171,27 @@ model Ticket {
   @@index([responsavelUserId])
   @@index([createdByUserId])
   @@index([createdAt])
+}
+
+model TicketEmailIngestion {
+  id                 Int                        @id @default(autoincrement())
+  gmailMessageId     String                     @unique
+  gmailThreadId      String?
+  fromEmail          String
+  subject            String?
+  receivedAt         DateTime?
+  statusProcessamento TicketEmailIngestionStatus
+  erro               String?
+  payloadRaw         String?
+  ticketId           Int?
+  createdAt          DateTime                   @default(now())
+  updatedAt          DateTime                   @updatedAt
+
+  ticket Ticket? @relation(fields: [ticketId], references: [id], onDelete: SetNull)
+
+  @@index([statusProcessamento, createdAt])
+  @@index([fromEmail, createdAt])
+  @@index([ticketId])
 }
 
 model TicketComment {

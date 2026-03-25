@@ -2588,6 +2588,14 @@ export default function App() {
       return;
     }
 
+    const currentStatus = selectedTicket?.id === id ? selectedTicket.status : tickets.find((item) => item.id === id)?.status;
+    const isReopening =
+      currentStatus === "RESOLVIDO" && (status === "ABERTO" || status === "EM_ANDAMENTO");
+    if (isReopening && !isAdmin) {
+      setMessage("Somente ADMIN pode reabrir ticket resolvido.");
+      return;
+    }
+
     setIsBusy(true);
     setMessage("");
     try {
@@ -5055,7 +5063,7 @@ export default function App() {
                               <button
                                 type="button"
                                 onClick={() => onUpdateTicketStatus(selectedTicket.id, "EM_ANDAMENTO")}
-                                disabled={isBusy}
+                                disabled={isBusy || !isAdmin}
                               >
                                 Reabrir ticket
                               </button>
@@ -5063,17 +5071,23 @@ export default function App() {
                           )}
 
                           <div className="action-row compact">
-                            {TICKET_STATUS_OPTIONS.map((status) => (
-                              <button
-                                key={status}
-                                type="button"
-                                className={selectedTicket.status === status ? "secondary" : "ghost"}
-                                onClick={() => onUpdateTicketStatus(selectedTicket.id, status)}
-                                disabled={isBusy || selectedTicket.status === status}
-                              >
-                                {TICKET_STATUS_LABELS[status]}
-                              </button>
-                            ))}
+                            {TICKET_STATUS_OPTIONS.map((status) => {
+                              const isReopenStatus = status === "ABERTO" || status === "EM_ANDAMENTO";
+                              const blockedByRole =
+                                selectedTicket.status === "RESOLVIDO" && isReopenStatus && !isAdmin;
+                              return (
+                                <button
+                                  key={status}
+                                  type="button"
+                                  className={selectedTicket.status === status ? "secondary" : "ghost"}
+                                  onClick={() => onUpdateTicketStatus(selectedTicket.id, status)}
+                                  disabled={isBusy || selectedTicket.status === status || blockedByRole}
+                                  title={blockedByRole ? "Somente ADMIN pode reabrir ticket resolvido." : undefined}
+                                >
+                                  {TICKET_STATUS_LABELS[status]}
+                                </button>
+                              );
+                            })}
                           </div>
 
                           <div className="action-row compact">

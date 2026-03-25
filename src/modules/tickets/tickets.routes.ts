@@ -195,6 +195,10 @@ ticketsRouter.post("/", authorizeRoles(UserRole.ADMIN, UserRole.GESTOR), async (
 });
 
 ticketsRouter.put("/:id", authorizeRoles(UserRole.ADMIN, UserRole.GESTOR), async (req, res) => {
+  if (!req.user) {
+    return res.status(401).json({ message: "Usuario nao autenticado." });
+  }
+
   const idParam = ticketIdParamSchema.safeParse(req.params);
   if (!idParam.success) {
     return res.status(400).json({ message: "ID invalido." });
@@ -218,6 +222,13 @@ ticketsRouter.put("/:id", authorizeRoles(UserRole.ADMIN, UserRole.GESTOR), async
     const nextReason = Object.prototype.hasOwnProperty.call(parsed.data, "motivo_resolucao")
       ? parsed.data.motivo_resolucao
       : existing.motivoResolucao;
+
+    const isReopeningTicket =
+      existing.status === "RESOLVIDO" && (nextStatus === "ABERTO" || nextStatus === "EM_ANDAMENTO");
+    if (isReopeningTicket && req.user.role !== UserRole.ADMIN) {
+      return res.status(403).json({ message: "Somente ADMIN pode reabrir ticket resolvido." });
+    }
+
     if (nextStatus === "RESOLVIDO" && !hasValidResolutionReason(nextReason)) {
       return res
         .status(422)
