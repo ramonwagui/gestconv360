@@ -6,6 +6,7 @@ import multer from "multer";
 import path from "path";
 
 import { authenticate, authorizeRoles } from "../../middlewares/auth";
+import { seedDemoInstrumentos } from "../../scripts/seed-demo-instrumentos";
 import { createUserSchema, updateUserSchema, userIdParamSchema } from "./usuarios.schema";
 import { clearUserAvatar, createUser, getUserById, listUsers, updateUser, updateUserAvatar } from "./usuarios.service";
 
@@ -168,6 +169,19 @@ router.post("/", async (req, res) => {
       return res.status(409).json({ message: "Email ja cadastrado." });
     }
     return res.status(500).json({ message: "Erro interno ao criar usuario." });
+  }
+});
+
+router.post("/seed-demo", async (_req, res) => {
+  try {
+    const result = await seedDemoInstrumentos();
+    return res.json({
+      message: "Dados demo carregados com sucesso.",
+      instrumentos: result.instrumentos,
+      repasses: result.repasses
+    });
+  } catch {
+    return res.status(500).json({ message: "Erro interno ao carregar dados demo." });
   }
 });
 

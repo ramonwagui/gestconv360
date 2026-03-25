@@ -11,12 +11,18 @@ import type {
   ConvenetePayload,
   DeadlineAlertResponse,
   InstrumentFilters,
+  InstrumentStatus,
   InstrumentRepasse,
   InstrumentPayload,
   Instrument,
   ManagedUser,
   HealthResponse,
+  ObraReportResponse,
   Role,
+  Ticket,
+  TicketPriority,
+  TicketStatus,
+  TicketSource,
   RepasseReportResponse,
   StageFollowUp,
   StageFollowUpListResponse,
@@ -82,6 +88,11 @@ const request = async <T>(
   });
 
   if (!res.ok) {
+    const normalizedHeaders = headers as Record<string, string | undefined>;
+    const hasAuthorization = Boolean(normalizedHeaders.Authorization ?? normalizedHeaders.authorization);
+    if (res.status === 401 && hasAuthorization) {
+      window.dispatchEvent(new CustomEvent("gestconv:auth-expired"));
+    }
     throw new Error(await getErrorMessage(res));
   }
 
@@ -133,6 +144,14 @@ export const updateUserAdmin = (
     body: JSON.stringify(payload)
   });
 
+export const seedDemoDataAdmin = (token: string) =>
+  request<{ message: string; instrumentos: number; repasses: number }>("/api/v1/usuarios/seed-demo", {
+    method: "POST",
+    headers: {
+      Authorization: `Bearer ${token}`
+    }
+  });
+
 export const listInstruments = (
   token: string,
   filters: InstrumentFilters
@@ -148,6 +167,7 @@ export const listInstruments = (
       ativo: filters.ativo,
       status: filters.status,
       concedente: filters.concedente,
+      convenete_id: filters.convenete_id,
       vigencia_de: filters.vigencia_de,
       vigencia_ate: filters.vigencia_ate
     }
@@ -594,5 +614,134 @@ export const getRepasseReport = (
       instrumento_id: query.instrumento_id ? String(query.instrumento_id) : "",
       data_de: query.data_de ?? "",
       data_ate: query.data_ate ?? ""
+    }
+  );
+
+export const getObraReport = (
+  token: string,
+  query: {
+    convenete_id?: number;
+    instrumento_id?: number;
+    status?: InstrumentStatus;
+    ativo?: boolean;
+    data_de?: string;
+    data_ate?: string;
+  }
+) =>
+  request<ObraReportResponse>(
+    "/api/v1/relatorios/obras",
+    {
+      headers: {
+        Authorization: `Bearer ${token}`
+      }
+    },
+    {
+      convenete_id: query.convenete_id ? String(query.convenete_id) : "",
+      instrumento_id: query.instrumento_id ? String(query.instrumento_id) : "",
+      status: query.status ?? "",
+      ativo: query.ativo === undefined ? "true" : String(query.ativo),
+      data_de: query.data_de ?? "",
+      data_ate: query.data_ate ?? ""
+    }
+  );
+
+export const listTickets = (
+  token: string,
+  query?: {
+    status?: TicketStatus;
+    prioridade?: TicketPriority;
+    origem?: TicketSource;
+    somente_atrasados?: boolean;
+    instrument_id?: number;
+    responsavel_user_id?: number;
+    q?: string;
+  }
+) =>
+  request<Ticket[]>(
+    "/api/v1/tickets",
+    {
+      headers: {
+        Authorization: `Bearer ${token}`
+      }
+    },
+    {
+      status: query?.status ?? "",
+      prioridade: query?.prioridade ?? "",
+      origem: query?.origem ?? "",
+      somente_atrasados: query?.somente_atrasados ? "true" : "",
+      instrument_id: query?.instrument_id ? String(query.instrument_id) : "",
+      responsavel_user_id: query?.responsavel_user_id ? String(query.responsavel_user_id) : "",
+      q: query?.q ?? ""
+    }
+  );
+
+export const getTicketById = (token: string, id: number) =>
+  request<Ticket>(`/api/v1/tickets/${id}`, {
+    headers: {
+      Authorization: `Bearer ${token}`
+    }
+  });
+
+export const createTicket = (
+  token: string,
+  payload: {
+    titulo: string;
+    descricao?: string;
+    status?: TicketStatus;
+    prioridade?: TicketPriority;
+    prazo_alvo?: string;
+    motivo_resolucao?: string;
+    instrument_id?: number;
+    instrumento_informado?: string;
+    responsavel_user_id?: number;
+  }
+) =>
+  request<Ticket>("/api/v1/tickets", {
+    method: "POST",
+    headers: {
+      Authorization: `Bearer ${token}`
+    },
+    body: JSON.stringify(payload)
+  });
+
+export const updateTicket = (
+  token: string,
+  id: number,
+  payload: Partial<{
+    titulo: string;
+    descricao: string | null;
+    status: TicketStatus;
+    prioridade: TicketPriority;
+    prazo_alvo: string | null;
+    motivo_resolucao: string | null;
+    instrument_id: number | null;
+    instrumento_informado: string | null;
+    responsavel_user_id: number | null;
+  }>
+) =>
+  request<Ticket>(`/api/v1/tickets/${id}`, {
+    method: "PUT",
+    headers: {
+      Authorization: `Bearer ${token}`
+    },
+    body: JSON.stringify(payload)
+  });
+
+export const addTicketComment = (token: string, id: number, mensagem: string) =>
+  request<Ticket>(`/api/v1/tickets/${id}/comments`, {
+    method: "POST",
+    headers: {
+      Authorization: `Bearer ${token}`
+    },
+    body: JSON.stringify({ mensagem })
+  });
+
+export const listTicketAssignableUsers = (token: string) =>
+  request<{ itens: Array<{ id: number; nome: string; email: string; role: Role }> }>(
+    "/api/v1/tickets/assignable-users",
+    {
+      headers: {
+        Authorization: `Bearer ${token}`
+      }
     }
   );

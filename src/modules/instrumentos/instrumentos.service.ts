@@ -392,6 +392,9 @@ export const createInstrument = async (input: CreateInstrumentInput) => {
         dataPrestacaoContas: toDate(input.data_prestacao_contas),
         dataDou: toDate(input.data_dou),
         concedente: input.concedente,
+        banco: input.banco,
+        agencia: input.agencia,
+        conta: input.conta,
         convenete: input.convenete_id ? { connect: { id: input.convenete_id } } : undefined,
         fluxoTipo: input.fluxo_tipo,
         status: input.status,
@@ -427,6 +430,10 @@ export const listInstruments = async (query: ListQueryInput) => {
     };
   }
 
+  if (query.convenete_id !== undefined) {
+    where.conveneteId = query.convenete_id;
+  }
+
   if (query.vigencia_de || query.vigencia_ate) {
     where.vigenciaFim = {
       gte: toDate(query.vigencia_de),
@@ -459,6 +466,9 @@ export const updateInstrument = async (id: number, input: UpdateInstrumentInput)
     dataPrestacaoContas: toDate(input.data_prestacao_contas),
     dataDou: toDate(input.data_dou),
     concedente: input.concedente,
+    banco: input.banco,
+    agencia: input.agencia,
+    conta: input.conta,
     convenete: input.convenete_id === undefined ? undefined : { connect: { id: input.convenete_id } },
     fluxoTipo: input.fluxo_tipo,
     status: input.status,

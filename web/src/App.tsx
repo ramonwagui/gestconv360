@@ -4,11 +4,14 @@ import {
   addWorkMeasurementBulletin,
   addInstrumentRepasse,
   addChecklistItem,
+  addTicketComment,
   createUserAdmin,
+  seedDemoDataAdmin,
   createChecklistExternalLink,
   deactivateChecklistExternalLink as deactivateChecklistExternalLinkApi,
   createConvenete,
   createInstrument,
+  createTicket,
   deleteWorkMeasurementBulletin,
   deleteInstrumentRepasse,
   deleteConvenete,
@@ -19,7 +22,9 @@ import {
   getInstrumentById,
   getInstrumentChecklist,
   getMyProfile,
+  getObraReport,
   getRepasseReport,
+  getTicketById,
   getWorkProgress,
   healthCheck,
   listAuditLogs,
@@ -27,6 +32,8 @@ import {
   listDeadlineAlerts,
   listInstruments,
   listInstrumentRepasses,
+  listTicketAssignableUsers,
+  listTickets,
   listUsersAdmin,
   login,
   removeMyAvatar,
@@ -35,6 +42,7 @@ import {
   updateUserAdmin,
   updateChecklistItem,
   updateConvenete,
+  updateTicket,
   updateWorkProgress,
   updateInstrument,
   uploadMyAvatar
@@ -54,6 +62,11 @@ import type {
   InstrumentPayload,
   InstrumentStatus,
   ManagedUser,
+  ObraReportResponse,
+  Ticket,
+  TicketPriority,
+  TicketSource,
+  TicketStatus,
   Role,
   RepasseReportResponse,
   StageFollowUp,
@@ -64,6 +77,7 @@ import type {
 
 const TOKEN_KEY = "gestconv360.token";
 const USER_KEY = "gestconv360.user";
+const TICKET_TAB_KEY = "gestconv360.ticket-tab";
 
 const STATUS_OPTIONS: InstrumentStatus[] = [
   "EM_ELABORACAO",
@@ -75,6 +89,25 @@ const STATUS_OPTIONS: InstrumentStatus[] = [
 ];
 
 const AUDIT_ACTION_OPTIONS: AuditAction[] = ["CREATE", "UPDATE", "DEACTIVATE"];
+const TICKET_STATUS_OPTIONS: TicketStatus[] = ["ABERTO", "EM_ANDAMENTO", "RESOLVIDO", "CANCELADO"];
+const TICKET_SOURCE_OPTIONS: TicketSource[] = ["MANUAL", "EMAIL"];
+const TICKET_PRIORITY_OPTIONS: TicketPriority[] = ["BAIXA", "MEDIA", "ALTA", "CRITICA"];
+const TICKET_STATUS_LABELS: Record<TicketStatus, string> = {
+  ABERTO: "Aberto",
+  EM_ANDAMENTO: "Em andamento",
+  RESOLVIDO: "Resolvido",
+  CANCELADO: "Cancelado"
+};
+const TICKET_SOURCE_LABELS: Record<TicketSource, string> = {
+  MANUAL: "Manual",
+  EMAIL: "Email"
+};
+const TICKET_PRIORITY_LABELS: Record<TicketPriority, string> = {
+  BAIXA: "Baixa",
+  MEDIA: "Media",
+  ALTA: "Alta",
+  CRITICA: "Critica"
+};
 
 const FLOW_TYPE_OPTIONS: InstrumentFlowType[] = ["OBRA", "AQUISICAO_EQUIPAMENTOS", "EVENTOS"];
 
@@ -162,7 +195,7 @@ const emptyStageFollowUps = (): Record<WorkflowStage, StageFollowUp[]> => ({
   ACOMPANHAMENTO_OBRA: []
 });
 
-type MenuView = "dashboard" | "instrumentos" | "convenetes" | "usuarios" | "auditoria" | "relatorios";
+type MenuView = "dashboard" | "instrumentos" | "convenetes" | "usuarios" | "auditoria" | "tickets" | "relatorios";
 type StageFollowUpFilter = "TODOS" | "SO_MEUS" | "COM_ANEXO" | "COM_TEXTO";
 type ReportPdfMode = "executivo" | "analitico";
 
@@ -171,6 +204,28 @@ type ReportFilters = {
   instrumento_id: string;
   data_de: string;
   data_ate: string;
+};
+
+type ObraReportFilters = {
+  convenete_id: string;
+  instrumento_id: string;
+  status: InstrumentStatus | "";
+  ativo: "true" | "false";
+  data_de: string;
+  data_ate: string;
+};
+
+type RelatorioTab = "repasses" | "obras";
+type TicketBoardTab = "abertos" | "resolvidos" | "cancelados";
+
+type TicketFilters = {
+  status: TicketStatus | "";
+  prioridade: TicketPriority | "";
+  origem: TicketSource | "";
+  somente_atrasados: boolean;
+  instrument_id: string;
+  responsavel_user_id: string;
+  q: string;
 };
 
 type TechnicalRouteStatus = "checking" | "ok" | "missing" | "error";
@@ -209,6 +264,9 @@ type InstrumentForm = {
   data_prestacao_contas: string;
   data_dou: string;
   concedente: string;
+  banco: string;
+  agencia: string;
+  conta: string;
   fluxo_tipo: InstrumentFlowType;
   convenete_id: string;
   status: InstrumentStatus;
@@ -247,6 +305,76 @@ const formatFileSize = (size: number) => {
     return `${kb.toFixed(1)} KB`;
   }
   return `${(kb / 1024).toFixed(1)} MB`;
+};
+
+const parseDateOnly = (value: string) => {
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(value)) {
+    return null;
+  }
+  const parsed = new Date(`${value}T00:00:00.000Z`);
+  return Number.isNaN(parsed.getTime()) ? null : parsed;
+};
+
+const formatDateOnlyPtBr = (value: string) => {
+  const parsed = parseDateOnly(value);
+  if (!parsed) {
+    return "Data invalida";
+  }
+  return parsed.toLocaleDateString("pt-BR", { timeZone: "UTC" });
+};
+
+const formatTicketSla = (ticket: Ticket) => {
+  if (!ticket.prazo_alvo) {
+    return "Sem prazo";
+  }
+
+  const dueDate = parseDateOnly(ticket.prazo_alvo);
+  if (!dueDate) {
+    return "Prazo invalido";
+  }
+
+  if (ticket.status === "RESOLVIDO" && ticket.resolvido_em) {
+    const resolvedAt = new Date(ticket.resolvido_em);
+    const resolvedUtc = Date.UTC(resolvedAt.getUTCFullYear(), resolvedAt.getUTCMonth(), resolvedAt.getUTCDate());
+    const dueUtc = Date.UTC(dueDate.getUTCFullYear(), dueDate.getUTCMonth(), dueDate.getUTCDate());
+    const diffDays = Math.floor((resolvedUtc - dueUtc) / (1000 * 60 * 60 * 24));
+    if (diffDays <= 0) {
+      return "Resolvido no prazo";
+    }
+    return `Resolvido com ${diffDays} dia(s) de atraso`;
+  }
+
+  if (ticket.status === "CANCELADO") {
+    return "Cancelado";
+  }
+
+  const now = new Date();
+  const todayUtc = Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate());
+  const dueUtc = Date.UTC(dueDate.getUTCFullYear(), dueDate.getUTCMonth(), dueDate.getUTCDate());
+  const diffDays = Math.floor((dueUtc - todayUtc) / (1000 * 60 * 60 * 24));
+  if (diffDays < 0) {
+    return `Atrasado ha ${Math.abs(diffDays)} dia(s)`;
+  }
+  if (diffDays === 0) {
+    return "Vence hoje";
+  }
+  return `Vence em ${diffDays} dia(s)`;
+};
+
+type TicketForm = {
+  titulo: string;
+  descricao: string;
+  prioridade: TicketPriority;
+  prazo_alvo: string;
+  instrument_id: string;
+  instrumento_informado: string;
+  responsavel_user_id: string;
+};
+
+const formatBankInfo = (item: { banco: string | null; agencia: string | null; conta: string | null }) => {
+  return [item.banco, item.agencia ? `Ag ${item.agencia}` : null, item.conta ? `Conta ${item.conta}` : null]
+    .filter((value) => Boolean(value))
+    .join(" | ");
 };
 
 const toAbsoluteUrl = (value: string) => {
@@ -303,6 +431,7 @@ const getInitials = (name: string | null | undefined, email: string) => {
 const blankFilters = (): InstrumentFilters => ({
   status: "",
   concedente: "",
+  convenete_id: "",
   ativo: "true",
   vigencia_de: "",
   vigencia_ate: ""
@@ -313,6 +442,35 @@ const emptyReportFilters = (): ReportFilters => ({
   instrumento_id: "",
   data_de: "",
   data_ate: ""
+});
+
+const emptyObraReportFilters = (): ObraReportFilters => ({
+  convenete_id: "",
+  instrumento_id: "",
+  status: "",
+  ativo: "true",
+  data_de: "",
+  data_ate: ""
+});
+
+const emptyTicketFilters = (): TicketFilters => ({
+  status: "",
+  prioridade: "",
+  origem: "",
+  somente_atrasados: false,
+  instrument_id: "",
+  responsavel_user_id: "",
+  q: ""
+});
+
+const emptyTicketForm = (): TicketForm => ({
+  titulo: "",
+  descricao: "",
+  prioridade: "MEDIA",
+  prazo_alvo: "",
+  instrument_id: "",
+  instrumento_informado: "",
+  responsavel_user_id: ""
 });
 
 const emptyInstrumentForm = (): InstrumentForm => ({
@@ -328,6 +486,9 @@ const emptyInstrumentForm = (): InstrumentForm => ({
   data_prestacao_contas: "",
   data_dou: "",
   concedente: "",
+  banco: "",
+  agencia: "",
+  conta: "",
   fluxo_tipo: "OBRA",
   convenete_id: "",
   status: "EM_ELABORACAO",
@@ -463,6 +624,9 @@ const toPayload = (form: InstrumentForm): InstrumentPayload => {
     data_prestacao_contas: asOptional(form.data_prestacao_contas),
     data_dou: asOptional(form.data_dou),
     concedente: form.concedente.trim(),
+    banco: asOptional(form.banco),
+    agencia: asOptional(form.agencia),
+    conta: asOptional(form.conta),
     fluxo_tipo: form.fluxo_tipo,
     convenete_id: asOptionalNumber(form.convenete_id),
     status: form.status,
@@ -485,6 +649,9 @@ const fromInstrumentToForm = (item: Instrument): InstrumentForm => ({
   data_prestacao_contas: item.data_prestacao_contas ?? "",
   data_dou: item.data_dou ?? "",
   concedente: item.concedente,
+  banco: item.banco ?? "",
+  agencia: item.agencia ?? "",
+  conta: item.conta ?? "",
   fluxo_tipo: item.fluxo_tipo,
   convenete_id: item.convenete_id ? String(item.convenete_id) : "",
   status: item.status,
@@ -590,11 +757,11 @@ const exportRepasseReportExcel = (report: RepasseReportResponse) => {
   const instrumentoRows = report.instrumentos
     .map(
       (item) =>
-        `<tr><td>${item.id}</td><td>${item.proposta}</td><td>${item.instrumento}</td><td>${item.status}</td><td>${item.empresa_vencedora ?? ""}</td><td>${item.valor_pactuado}</td><td>${item.valor_ja_repassado}</td><td>${item.valor_repassado_periodo}</td><td>${item.saldo_pactuado}</td></tr>`
+        `<tr><td>${item.id}</td><td>${item.proposta}</td><td>${item.instrumento}</td><td>${item.status}</td><td>${item.orgao_concedente}</td><td>${item.banco ?? ""}</td><td>${item.agencia ?? ""}</td><td>${item.conta ?? ""}</td><td>${item.data_prestacao_contas ?? ""}</td><td>${item.empresa_vencedora ?? ""}</td><td>${item.valor_pactuado}</td><td>${item.valor_ja_repassado}</td><td>${item.valor_repassado_periodo}</td><td>${item.saldo_pactuado}</td></tr>`
     )
     .join("");
 
-  const html = `<!doctype html><html><head><meta charset="utf-8" /></head><body><h3>Resumo</h3><table border="1"><tbody><tr><td>Convenete</td><td>${report.filtros.convenete_nome}</td></tr><tr><td>CNPJ</td><td>${report.filtros.convenete_cnpj}</td></tr><tr><td>Valor repassado no periodo</td><td>${report.kpis.valor_repassado_periodo}</td></tr><tr><td>Quantidade de repasses</td><td>${report.kpis.quantidade_repasses}</td></tr><tr><td>% repassado</td><td>${report.kpis.percentual_repassado.toFixed(2)}%</td></tr></tbody></table><h3>Repasses</h3><table border="1"><thead><tr><th>ID</th><th>Instrumento ID</th><th>Proposta</th><th>Instrumento</th><th>Data</th><th>Valor</th><th>Empresa vencedora</th></tr></thead><tbody>${repasseRows}</tbody></table><h3>Instrumentos</h3><table border="1"><thead><tr><th>ID</th><th>Proposta</th><th>Instrumento</th><th>Status</th><th>Empresa vencedora</th><th>Valor pactuado</th><th>Valor ja repassado</th><th>Repassado no periodo</th><th>Saldo</th></tr></thead><tbody>${instrumentoRows}</tbody></table></body></html>`;
+  const html = `<!doctype html><html><head><meta charset="utf-8" /></head><body><h3>Resumo</h3><table border="1"><tbody><tr><td>Convenete</td><td>${report.filtros.convenete_nome}</td></tr><tr><td>CNPJ</td><td>${report.filtros.convenete_cnpj}</td></tr><tr><td>Valor repassado no periodo</td><td>${report.kpis.valor_repassado_periodo}</td></tr><tr><td>Quantidade de repasses</td><td>${report.kpis.quantidade_repasses}</td></tr><tr><td>% repassado</td><td>${report.kpis.percentual_repassado.toFixed(2)}%</td></tr></tbody></table><h3>Repasses</h3><table border="1"><thead><tr><th>ID</th><th>Instrumento ID</th><th>Proposta</th><th>Instrumento</th><th>Data</th><th>Valor</th><th>Empresa vencedora</th></tr></thead><tbody>${repasseRows}</tbody></table><h3>Instrumentos</h3><table border="1"><thead><tr><th>ID</th><th>Proposta</th><th>Instrumento</th><th>Status</th><th>Orgao concedente</th><th>Banco</th><th>Agencia</th><th>Conta</th><th>Prestacao de contas</th><th>Empresa vencedora</th><th>Valor pactuado</th><th>Valor ja repassado</th><th>Repassado no periodo</th><th>Saldo</th></tr></thead><tbody>${instrumentoRows}</tbody></table></body></html>`;
 
   const blob = new Blob([html], { type: "application/vnd.ms-excel;charset=utf-8;" });
   const url = URL.createObjectURL(blob);
@@ -620,11 +787,88 @@ const exportRepasseReportPdf = (report: RepasseReportResponse, mode: ReportPdfMo
   const instrumentRows = report.instrumentos
     .map(
       (item) =>
-        `<tr><td>${item.instrumento}</td><td>${item.status}</td><td style="text-align:right">${formatCurrency(item.valor_pactuado)}</td><td style="text-align:right">${formatCurrency(item.valor_ja_repassado)}</td><td style="text-align:right">${formatCurrency(item.saldo_pactuado)}</td></tr>`
+        `<tr><td>${item.instrumento}</td><td>${item.status}</td><td>${item.orgao_concedente}</td><td>${item.banco ?? "-"}</td><td>${item.agencia ?? "-"}</td><td>${item.conta ?? "-"}</td><td>${item.data_prestacao_contas ?? "-"}</td><td style="text-align:right">${formatCurrency(item.valor_pactuado)}</td><td style="text-align:right">${formatCurrency(item.valor_ja_repassado)}</td><td style="text-align:right">${formatCurrency(item.saldo_pactuado)}</td></tr>`
     )
     .join("");
 
-  popup.document.write(`<!doctype html><html><head><meta charset="utf-8" /><title>Relatorio de repasses</title><style>body{font-family:Segoe UI,Arial,sans-serif;padding:24px;color:#102a43}.report-head{display:flex;align-items:center;justify-content:space-between;gap:12px;margin-bottom:14px}.report-head img{max-width:180px;height:auto;display:block}h1,h2{margin:0 0 12px}table{width:100%;border-collapse:collapse;margin-top:12px}th,td{border:1px solid #cbd5e1;padding:8px;font-size:12px;text-align:left}.kpi{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:10px;margin:16px 0}.kpi div{border:1px solid #cbd5e1;border-radius:8px;padding:10px}</style></head><body><div class="report-head"><img src="/api/v1/public/brand-logo" alt="NC Convenios" /><h1>Relatorio de repasses (${mode})</h1></div><p><strong>Convenete:</strong> ${report.filtros.convenete_nome} (${report.filtros.convenete_cnpj})</p><p><strong>Periodo:</strong> ${report.filtros.data_de ?? "inicio"} ate ${report.filtros.data_ate ?? "hoje"}</p><div class="kpi"><div><strong>Repassado no periodo</strong><br/>${formatCurrency(report.kpis.valor_repassado_periodo)}</div><div><strong>Qtd repasses</strong><br/>${report.kpis.quantidade_repasses}</div><div><strong>Valor pactuado</strong><br/>${formatCurrency(report.kpis.valor_pactuado)}</div><div><strong>% repassado</strong><br/>${report.kpis.percentual_repassado.toFixed(2)}%</div></div>${mode === "analitico" ? `<h2>Instrumentos</h2><table><thead><tr><th>Instrumento</th><th>Status</th><th>Pactuado</th><th>Ja repassado</th><th>Saldo</th></tr></thead><tbody>${instrumentRows}</tbody></table>` : ""}<h2>Repasses</h2><table><thead><tr><th>Data</th><th>Instrumento</th><th>Valor</th><th>Empresa vencedora</th></tr></thead><tbody>${repasseRows}</tbody></table><script>window.print()</script></body></html>`);
+  popup.document.write(`<!doctype html><html><head><meta charset="utf-8" /><title>Relatorio de repasses</title><style>body{font-family:Segoe UI,Arial,sans-serif;padding:24px;color:#102a43}.report-head{display:flex;align-items:center;justify-content:space-between;gap:12px;margin-bottom:14px}.report-head img{max-width:180px;height:auto;display:block}h1,h2{margin:0 0 12px}table{width:100%;border-collapse:collapse;margin-top:12px}th,td{border:1px solid #cbd5e1;padding:8px;font-size:12px;text-align:left}.kpi{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:10px;margin:16px 0}.kpi div{border:1px solid #cbd5e1;border-radius:8px;padding:10px}</style></head><body><div class="report-head"><img src="/api/v1/public/brand-logo" alt="NC Convenios" /><h1>Relatorio de repasses (${mode})</h1></div><p><strong>Convenete:</strong> ${report.filtros.convenete_nome} (${report.filtros.convenete_cnpj})</p><p><strong>Periodo:</strong> ${report.filtros.data_de ?? "inicio"} ate ${report.filtros.data_ate ?? "hoje"}</p><div class="kpi"><div><strong>Repassado no periodo</strong><br/>${formatCurrency(report.kpis.valor_repassado_periodo)}</div><div><strong>Qtd repasses</strong><br/>${report.kpis.quantidade_repasses}</div><div><strong>Valor pactuado</strong><br/>${formatCurrency(report.kpis.valor_pactuado)}</div><div><strong>% repassado</strong><br/>${report.kpis.percentual_repassado.toFixed(2)}%</div></div>${mode === "analitico" ? `<h2>Instrumentos</h2><table><thead><tr><th>Instrumento</th><th>Status</th><th>Orgao concedente</th><th>Banco</th><th>Agencia</th><th>Conta</th><th>Prestacao de contas</th><th>Pactuado</th><th>Ja repassado</th><th>Saldo</th></tr></thead><tbody>${instrumentRows}</tbody></table>` : ""}<h2>Repasses</h2><table><thead><tr><th>Data</th><th>Instrumento</th><th>Valor</th><th>Empresa vencedora</th></tr></thead><tbody>${repasseRows}</tbody></table><script>window.print()</script></body></html>`);
+  popup.document.close();
+};
+
+const exportObraReportCsv = (report: ObraReportResponse) => {
+  const columns = [
+    "id",
+    "proposta",
+    "instrumento",
+    "objeto",
+    "status",
+    "orgao_concedente",
+    "banco",
+    "agencia",
+    "conta",
+    "data_prestacao_contas",
+    "vigencia_fim",
+    "dias_para_vigencia_fim",
+    "percentual_obra",
+    "valor_pactuado",
+    "valor_ja_repassado",
+    "valor_boletins_periodo",
+    "valor_repasses_periodo",
+    "ultimo_boletim_data",
+    "ultimo_boletim_valor",
+    "risco"
+  ] as const;
+  type CsvColumn = (typeof columns)[number];
+
+  const header = columns.map((col) => toCsvCell(col)).join(";");
+  const rows = report.instrumentos.map((item) => {
+    const row = item as unknown as Record<CsvColumn, string | number | null>;
+    return columns.map((col) => toCsvCell(row[col])).join(";");
+  });
+
+  const csv = [header, ...rows].join("\n");
+  const blob = new Blob([csv], { type: "text/csv;charset=utf-8;" });
+  const url = URL.createObjectURL(blob);
+  const link = document.createElement("a");
+  link.href = url;
+  link.download = `relatorio-obras-${todayDate()}.csv`;
+  link.click();
+  URL.revokeObjectURL(url);
+};
+
+const exportObraReportExcel = (report: ObraReportResponse) => {
+  const instrumentoRows = report.instrumentos
+    .map(
+      (item) =>
+        `<tr><td>${item.id}</td><td>${item.proposta}</td><td>${item.instrumento}</td><td>${item.objeto}</td><td>${item.status}</td><td>${item.orgao_concedente}</td><td>${item.banco ?? ""}</td><td>${item.agencia ?? ""}</td><td>${item.conta ?? ""}</td><td>${item.data_prestacao_contas ?? ""}</td><td>${item.vigencia_fim}</td><td>${item.dias_para_vigencia_fim}</td><td>${item.percentual_obra}</td><td>${item.valor_pactuado}</td><td>${item.valor_ja_repassado}</td><td>${item.valor_boletins_periodo}</td><td>${item.valor_repasses_periodo}</td><td>${item.ultimo_boletim_data ?? ""}</td><td>${item.ultimo_boletim_valor ?? ""}</td><td>${item.risco}</td></tr>`
+    )
+    .join("");
+
+  const html = `<!doctype html><html><head><meta charset="utf-8" /></head><body><h3>Resumo</h3><table border="1"><tbody><tr><td>Obras monitoradas</td><td>${report.kpis.obras_monitoradas}</td></tr><tr><td>% medio da obra</td><td>${report.kpis.percentual_medio_obra.toFixed(2)}%</td></tr><tr><td>Boletins no periodo</td><td>${report.kpis.valor_total_boletins_periodo}</td></tr><tr><td>Repasses no periodo</td><td>${report.kpis.valor_total_repasses_periodo}</td></tr><tr><td>Risco alto</td><td>${report.kpis.obras_risco_alto}</td></tr></tbody></table><h3>Obras</h3><table border="1"><thead><tr><th>ID</th><th>Proposta</th><th>Instrumento</th><th>Objeto</th><th>Status</th><th>Orgao concedente</th><th>Banco</th><th>Agencia</th><th>Conta</th><th>Prestacao contas</th><th>Vigencia fim</th><th>Dias vigencia fim</th><th>% obra</th><th>Pactuado</th><th>Ja repassado</th><th>Boletins periodo</th><th>Repasses periodo</th><th>Ultimo boletim data</th><th>Ultimo boletim valor</th><th>Risco</th></tr></thead><tbody>${instrumentoRows}</tbody></table></body></html>`;
+
+  const blob = new Blob([html], { type: "application/vnd.ms-excel;charset=utf-8;" });
+  const url = URL.createObjectURL(blob);
+  const link = document.createElement("a");
+  link.href = url;
+  link.download = `relatorio-obras-${todayDate()}.xls`;
+  link.click();
+  URL.revokeObjectURL(url);
+};
+
+const exportObraReportPdf = (report: ObraReportResponse, mode: ReportPdfMode) => {
+  const popup = window.open("", "_blank");
+  if (!popup) {
+    return;
+  }
+
+  const instrumentRows = report.instrumentos
+    .map(
+      (item) =>
+        `<tr><td>${item.instrumento}</td><td>${item.objeto}</td><td>${item.status}</td><td>${item.percentual_obra.toFixed(2)}%</td><td>${item.dias_para_vigencia_fim}</td><td>${item.risco}</td><td style="text-align:right">${formatCurrency(item.valor_boletins_periodo)}</td><td style="text-align:right">${formatCurrency(item.valor_repasses_periodo)}</td></tr>`
+    )
+    .join("");
+
+  popup.document.write(`<!doctype html><html><head><meta charset="utf-8" /><title>Relatorio de obras</title><style>body{font-family:Segoe UI,Arial,sans-serif;padding:24px;color:#102a43}.report-head{display:flex;align-items:center;justify-content:space-between;gap:12px;margin-bottom:14px}.report-head img{max-width:180px;height:auto;display:block}h1,h2{margin:0 0 12px}table{width:100%;border-collapse:collapse;margin-top:12px}th,td{border:1px solid #cbd5e1;padding:8px;font-size:12px;text-align:left}.kpi{display:grid;grid-template-columns:repeat(5,minmax(0,1fr));gap:10px;margin:16px 0}.kpi div{border:1px solid #cbd5e1;border-radius:8px;padding:10px}</style></head><body><div class="report-head"><img src="/api/v1/public/brand-logo" alt="NC Convenios" /><h1>Relatorio de obras (${mode})</h1></div><p><strong>Periodo:</strong> ${report.filtros.data_de ?? "inicio"} ate ${report.filtros.data_ate ?? "hoje"}</p><div class="kpi"><div><strong>Obras monitoradas</strong><br/>${report.kpis.obras_monitoradas}</div><div><strong>% medio da obra</strong><br/>${report.kpis.percentual_medio_obra.toFixed(2)}%</div><div><strong>Boletins no periodo</strong><br/>${formatCurrency(report.kpis.valor_total_boletins_periodo)}</div><div><strong>Repasses no periodo</strong><br/>${formatCurrency(report.kpis.valor_total_repasses_periodo)}</div><div><strong>Risco alto</strong><br/>${report.kpis.obras_risco_alto}</div></div>${mode === "analitico" ? `<h2>Instrumentos</h2><table><thead><tr><th>Instrumento</th><th>Objeto</th><th>Status</th><th>% obra</th><th>Dias vigencia fim</th><th>Risco</th><th>Boletins periodo</th><th>Repasses periodo</th></tr></thead><tbody>${instrumentRows}</tbody></table>` : ""}<script>window.print()</script></body></html>`);
   popup.document.close();
 };
 
@@ -699,8 +943,25 @@ export default function App() {
   const [empresaVencedoraInput, setEmpresaVencedoraInput] = useState("");
 
   const [convenetes, setConvenetes] = useState<Convenete[]>([]);
+  const [ticketFilters, setTicketFilters] = useState<TicketFilters>(() => emptyTicketFilters());
+  const [tickets, setTickets] = useState<Ticket[]>([]);
+  const [ticketBoardTab, setTicketBoardTab] = useState<TicketBoardTab>(() => {
+    const stored = localStorage.getItem(TICKET_TAB_KEY);
+    if (stored === "abertos" || stored === "resolvidos" || stored === "cancelados") {
+      return stored;
+    }
+    return "abertos";
+  });
+  const [selectedTicket, setSelectedTicket] = useState<Ticket | null>(null);
+  const [ticketForm, setTicketForm] = useState<TicketForm>(() => emptyTicketForm());
+  const [ticketResolutionReason, setTicketResolutionReason] = useState("");
+  const [ticketCommentText, setTicketCommentText] = useState("");
+  const [ticketAssignableUsers, setTicketAssignableUsers] = useState<Array<{ id: number; nome: string; email: string; role: Role }>>([]);
+  const [relatorioTab, setRelatorioTab] = useState<RelatorioTab>("repasses");
   const [reportFilters, setReportFilters] = useState<ReportFilters>(() => emptyReportFilters());
   const [reportData, setReportData] = useState<RepasseReportResponse | null>(null);
+  const [obraReportFilters, setObraReportFilters] = useState<ObraReportFilters>(() => emptyObraReportFilters());
+  const [obraReportData, setObraReportData] = useState<ObraReportResponse | null>(null);
   const [conveneteForm, setConveneteForm] = useState<ConveneteForm>(() => emptyConveneteForm());
   const [editingConveneteId, setEditingConveneteId] = useState<number | null>(null);
   const [managedUsers, setManagedUsers] = useState<ManagedUser[]>([]);
@@ -715,6 +976,22 @@ export default function App() {
   const isInstrumentProfileView = activeView === "instrumentos" && instrumentPageId !== null;
 
   const sortedInstruments = useMemo(() => [...instruments].sort((a, b) => a.id - b.id), [instruments]);
+  const concedenteOptions = useMemo(() => {
+    const values = new Set<string>();
+    for (const item of overviewItems) {
+      const value = item.concedente.trim();
+      if (value) {
+        values.add(value);
+      }
+    }
+    for (const item of sortedInstruments) {
+      const value = item.concedente.trim();
+      if (value) {
+        values.add(value);
+      }
+    }
+    return Array.from(values).sort((a, b) => a.localeCompare(b, "pt-BR"));
+  }, [overviewItems, sortedInstruments]);
   const conveneteNameById = useMemo(() => {
     return new Map(convenetes.map((item) => [item.id, item.nome]));
   }, [convenetes]);
@@ -751,6 +1028,15 @@ export default function App() {
     const conveneteId = Number(reportFilters.convenete_id);
     return sortedInstruments.filter((item) => item.convenete_id === conveneteId);
   }, [reportFilters.convenete_id, sortedInstruments]);
+  const obraReportInstrumentOptions = useMemo(() => {
+    const obraItems = sortedInstruments.filter((item) => item.fluxo_tipo === "OBRA");
+    if (obraReportFilters.convenete_id.trim() === "") {
+      return obraItems;
+    }
+
+    const conveneteId = Number(obraReportFilters.convenete_id);
+    return obraItems.filter((item) => item.convenete_id === conveneteId);
+  }, [obraReportFilters.convenete_id, sortedInstruments]);
 
   const dashboard = useMemo(() => {
     const totalRegistros = overviewItems.length;
@@ -771,6 +1057,77 @@ export default function App() {
     };
   }, [overviewItems, alerts]);
 
+  const dashboardInsights = useMemo(() => {
+    const totalRepassado = overviewItems.reduce((acc, item) => acc + item.valor_ja_repassado, 0);
+    const percentualMedioRepassado =
+      overviewItems.length > 0
+        ? overviewItems.reduce((acc, item) => acc + item.percentual_repassado, 0) / overviewItems.length
+        : 0;
+
+    const flowTypes: InstrumentFlowType[] = [
+      "OBRA",
+      "AQUISICAO_EQUIPAMENTOS",
+      "EVENTOS"
+    ];
+    const porFluxo: Array<{ fluxo: InstrumentFlowType; quantidade: number }> = flowTypes.map((fluxo) => ({
+      fluxo,
+      quantidade: overviewItems.filter((item) => item.fluxo_tipo === fluxo).length
+    }));
+
+    const concedenteMap = new Map<string, number>();
+    for (const item of overviewItems) {
+      const key = item.concedente.trim();
+      concedenteMap.set(key, (concedenteMap.get(key) ?? 0) + 1);
+    }
+    const topConcedentes = Array.from(concedenteMap.entries())
+      .map(([concedente, quantidade]) => ({ concedente, quantidade }))
+      .sort((a, b) => b.quantidade - a.quantidade)
+      .slice(0, 5);
+
+    const alertasCriticos = [...alerts]
+      .sort((a, b) => {
+        const aMin = Math.min(a.dias_para_vigencia_fim, a.dias_para_prestacao_contas ?? Number.POSITIVE_INFINITY);
+        const bMin = Math.min(b.dias_para_vigencia_fim, b.dias_para_prestacao_contas ?? Number.POSITIVE_INFINITY);
+        return aMin - bMin;
+      })
+      .slice(0, 5);
+
+    const obrasAtivas = overviewItems.filter((item) => item.fluxo_tipo === "OBRA" && item.ativo);
+    const obrasComBaixoRepasse = [...obrasAtivas]
+      .sort((a, b) => a.percentual_repassado - b.percentual_repassado)
+      .slice(0, 5);
+
+    return {
+      totalRepassado,
+      percentualMedioRepassado,
+      porFluxo,
+      topConcedentes,
+      alertasCriticos,
+      obrasComBaixoRepasse,
+      prestacaoPendente: overviewItems.filter((item) => item.status === "PRESTACAO_PENDENTE").length,
+      emExecucao: overviewItems.filter((item) => item.status === "EM_EXECUCAO").length,
+      vencidos: overviewItems.filter((item) => item.status === "VENCIDO").length,
+      usuarios: managedUsers.length,
+      logs: auditLogs.length
+    };
+  }, [overviewItems, alerts, managedUsers, auditLogs]);
+
+  const openTickets = useMemo(
+    () => tickets.filter((item) => item.status === "ABERTO" || item.status === "EM_ANDAMENTO"),
+    [tickets]
+  );
+  const resolvedTickets = useMemo(() => tickets.filter((item) => item.status === "RESOLVIDO"), [tickets]);
+  const canceledTickets = useMemo(() => tickets.filter((item) => item.status === "CANCELADO"), [tickets]);
+  const visibleTickets = useMemo(() => {
+    if (ticketBoardTab === "resolvidos") {
+      return resolvedTickets;
+    }
+    if (ticketBoardTab === "cancelados") {
+      return canceledTickets;
+    }
+    return openTickets;
+  }, [ticketBoardTab, openTickets, resolvedTickets, canceledTickets]);
+
   const refreshTechnicalHealth = async () => {
     let backendVersion = "desconhecida";
 
@@ -788,8 +1145,21 @@ export default function App() {
       return;
     }
 
+    if (!token) {
+      setTechnicalHealth({
+        backendVersion,
+        reportRouteStatus: "checking",
+        lastCheckedAt: new Date().toISOString()
+      });
+      return;
+    }
+
     try {
-      const smokeResponse = await fetch("/api/v1/relatorios/repasses?convenete_id=1");
+      const smokeResponse = await fetch("/api/v1/relatorios/repasses?convenete_id=1", {
+        headers: {
+          Authorization: `Bearer ${token}`
+        }
+      });
       const routeStatus: TechnicalRouteStatus = smokeResponse.status === 404 ? "missing" : "ok";
       setTechnicalHealth({
         backendVersion,
@@ -807,7 +1177,7 @@ export default function App() {
 
   useEffect(() => {
     void refreshTechnicalHealth();
-  }, []);
+  }, [token]);
 
   const persistAuth = (nextToken: string, nextUser: User) => {
     setToken(nextToken);
@@ -845,8 +1215,19 @@ export default function App() {
     setShowWorkProgressPanel(false);
     setRepasseValorInput(formatCurrencyInput(0));
     setRepasseDataInput(todayDate());
+    setRelatorioTab("repasses");
     setReportFilters(emptyReportFilters());
     setReportData(null);
+    setObraReportFilters(emptyObraReportFilters());
+    setObraReportData(null);
+    setTicketFilters(emptyTicketFilters());
+    setTickets([]);
+    setTicketBoardTab("abertos");
+    setSelectedTicket(null);
+    setTicketForm(emptyTicketForm());
+    setTicketResolutionReason("");
+    setTicketCommentText("");
+    setTicketAssignableUsers([]);
     setEditingId(null);
     setShowCreateInstrumentForm(false);
     setForm(emptyInstrumentForm());
@@ -863,7 +1244,32 @@ export default function App() {
     }
     localStorage.removeItem(TOKEN_KEY);
     localStorage.removeItem(USER_KEY);
+    localStorage.removeItem(TICKET_TAB_KEY);
   };
+
+  useEffect(() => {
+    const onAuthExpired = () => {
+      clearAuth();
+      setMessage("Sessao expirada. Faca login novamente.");
+    };
+
+    window.addEventListener("gestconv:auth-expired", onAuthExpired);
+    return () => window.removeEventListener("gestconv:auth-expired", onAuthExpired);
+  }, []);
+
+  useEffect(() => {
+    localStorage.setItem(TICKET_TAB_KEY, ticketBoardTab);
+  }, [ticketBoardTab]);
+
+  useEffect(() => {
+    if (!selectedTicket) {
+      return;
+    }
+    const stillVisible = visibleTickets.some((item) => item.id === selectedTicket.id);
+    if (!stillVisible) {
+      setSelectedTicket(null);
+    }
+  }, [visibleTickets, selectedTicket]);
 
   const navigateToInstrumentList = () => {
     setInstrumentPageId(null);
@@ -971,6 +1377,24 @@ export default function App() {
     setReportData(report);
   };
 
+  const loadObraReport = async (authToken?: string) => {
+    const currentToken = authToken ?? token;
+    if (!currentToken) {
+      return;
+    }
+
+    const report = await getObraReport(currentToken, {
+      convenete_id: obraReportFilters.convenete_id.trim() === "" ? undefined : Number(obraReportFilters.convenete_id),
+      instrumento_id: obraReportFilters.instrumento_id.trim() === "" ? undefined : Number(obraReportFilters.instrumento_id),
+      status: obraReportFilters.status || undefined,
+      ativo: obraReportFilters.ativo === "true",
+      data_de: obraReportFilters.data_de || undefined,
+      data_ate: obraReportFilters.data_ate || undefined
+    });
+
+    setObraReportData(report);
+  };
+
   const loadManagedUsers = async (authToken?: string) => {
     const currentToken = authToken ?? token;
     if (!currentToken || !isAdmin) {
@@ -980,6 +1404,39 @@ export default function App() {
 
     const items = await listUsersAdmin(currentToken);
     setManagedUsers(items);
+  };
+
+  const loadTickets = async (authToken?: string, filtersOverride?: TicketFilters) => {
+    const currentToken = authToken ?? token;
+    if (!currentToken) {
+      setTickets([]);
+      return;
+    }
+
+    const sourceFilters = filtersOverride ?? ticketFilters;
+
+    const items = await listTickets(currentToken, {
+      status: sourceFilters.status || undefined,
+      prioridade: sourceFilters.prioridade || undefined,
+      origem: sourceFilters.origem || undefined,
+      somente_atrasados: sourceFilters.somente_atrasados,
+      instrument_id: sourceFilters.instrument_id.trim() === "" ? undefined : Number(sourceFilters.instrument_id),
+      responsavel_user_id:
+        sourceFilters.responsavel_user_id.trim() === "" ? undefined : Number(sourceFilters.responsavel_user_id),
+      q: sourceFilters.q.trim() === "" ? undefined : sourceFilters.q.trim()
+    });
+    setTickets(items);
+  };
+
+  const loadTicketAssignableUsers = async (authToken?: string) => {
+    const currentToken = authToken ?? token;
+    if (!currentToken || !canManageInstruments) {
+      setTicketAssignableUsers([]);
+      return;
+    }
+
+    const result = await listTicketAssignableUsers(currentToken);
+    setTicketAssignableUsers(result.itens);
   };
 
   const loadChecklist = async (instrumentId: number, authToken?: string) => {
@@ -1029,7 +1486,7 @@ export default function App() {
     setIsBusy(true);
     setMessage("");
     try {
-      await Promise.all([loadInstruments(authToken), loadDashboard(authToken), loadAuditTrail(authToken)]);
+      await Promise.all([loadInstruments(authToken), loadDashboard(authToken), loadAuditTrail(authToken), loadTickets(authToken)]);
       try {
         await loadConvenetes(authToken);
       } catch {
@@ -1037,6 +1494,11 @@ export default function App() {
       }
       try {
         await loadManagedUsers(authToken);
+      } catch {
+        // Intencionalmente ignorado para nao bloquear outras telas.
+      }
+      try {
+        await loadTicketAssignableUsers(authToken);
       } catch {
         // Intencionalmente ignorado para nao bloquear outras telas.
       }
@@ -1162,10 +1624,24 @@ export default function App() {
         convenete_id: String(convenetes[0].id)
       };
     });
+
+    setObraReportFilters((prev) => {
+      if (prev.convenete_id.trim() !== "") {
+        return prev;
+      }
+      return {
+        ...prev,
+        convenete_id: String(convenetes[0].id)
+      };
+    });
   }, [convenetes]);
 
   useEffect(() => {
     if (!isAuthenticated || activeView !== "relatorios") {
+      return;
+    }
+
+    if (relatorioTab !== "repasses") {
       return;
     }
 
@@ -1174,7 +1650,49 @@ export default function App() {
     }
 
     void onApplyRepasseReportFilters();
-  }, [activeView, isAuthenticated, reportFilters.convenete_id, reportData]);
+  }, [activeView, isAuthenticated, relatorioTab, reportFilters.convenete_id, reportData]);
+
+  useEffect(() => {
+    if (!isAuthenticated || activeView !== "relatorios") {
+      return;
+    }
+
+    if (relatorioTab !== "obras") {
+      return;
+    }
+
+    if (obraReportData) {
+      return;
+    }
+
+    void onApplyObraReportFilters();
+  }, [activeView, isAuthenticated, relatorioTab, obraReportData]);
+
+  useEffect(() => {
+    if (reportFilters.instrumento_id.trim() === "") {
+      return;
+    }
+
+    const selectedId = Number(reportFilters.instrumento_id);
+    const stillAvailable = reportInstrumentOptions.some((item) => item.id === selectedId);
+    if (!stillAvailable) {
+      setReportFilters((prev) => ({ ...prev, instrumento_id: "" }));
+      setReportData(null);
+    }
+  }, [reportFilters.instrumento_id, reportInstrumentOptions]);
+
+  useEffect(() => {
+    if (obraReportFilters.instrumento_id.trim() === "") {
+      return;
+    }
+
+    const selectedId = Number(obraReportFilters.instrumento_id);
+    const stillAvailable = obraReportInstrumentOptions.some((item) => item.id === selectedId);
+    if (!stillAvailable) {
+      setObraReportFilters((prev) => ({ ...prev, instrumento_id: "" }));
+      setObraReportData(null);
+    }
+  }, [obraReportFilters.instrumento_id, obraReportInstrumentOptions]);
 
   const onToggleWorkflowStage = (stage: WorkflowStage) => {
     setActiveWorkflowStage((prev) => (prev === stage ? null : stage));
@@ -1606,12 +2124,28 @@ export default function App() {
     setReportData(null);
   };
 
+  const onClearObraReportFilters = () => {
+    setObraReportFilters((prev) => ({
+      ...emptyObraReportFilters(),
+      convenete_id: prev.convenete_id
+    }));
+    setObraReportData(null);
+  };
+
   const onExportRepasseReportPdf = (mode: ReportPdfMode) => {
     if (!reportData) {
       setMessage("Gere o relatorio antes de exportar.");
       return;
     }
     exportRepasseReportPdf(reportData, mode);
+  };
+
+  const onExportObraReportPdf = (mode: ReportPdfMode) => {
+    if (!obraReportData) {
+      setMessage("Gere o relatorio de obras antes de exportar.");
+      return;
+    }
+    exportObraReportPdf(obraReportData, mode);
   };
 
   const onStartCreateInstrument = () => {
@@ -1656,6 +2190,8 @@ export default function App() {
         setSelectedInstrument(saved);
       }
       clearForm();
+      setReportData(null);
+      setObraReportData(null);
       await refreshData();
       setMessage(wasEditing ? "Instrumento atualizado." : "Instrumento criado.");
     } catch (error) {
@@ -1883,6 +2419,300 @@ export default function App() {
     }
   };
 
+  const onApplyObraReportFilters = async () => {
+    setIsBusy(true);
+    setMessage("");
+    try {
+      await loadObraReport();
+      setMessage("Relatorio de obras atualizado com sucesso.");
+    } catch (error) {
+      setMessage(error instanceof Error ? error.message : "Falha ao gerar relatorio de obras.");
+    } finally {
+      setIsBusy(false);
+    }
+  };
+
+  const onSeedDemoData = async () => {
+    if (!token || !isAdmin) {
+      return;
+    }
+
+    if (!window.confirm("Isso vai recriar os 10 instrumentos demo e seus repasses. Deseja continuar?")) {
+      return;
+    }
+
+    setIsBusy(true);
+    setMessage("");
+    try {
+      const result = await seedDemoDataAdmin(token);
+      await refreshData();
+      setMessage(`${result.message} Instrumentos: ${result.instrumentos}. Repasses: ${result.repasses}.`);
+    } catch (error) {
+      setMessage(error instanceof Error ? error.message : "Falha ao carregar dados demo.");
+    } finally {
+      setIsBusy(false);
+    }
+  };
+
+  const onApplyTicketFilters = async () => {
+    if (!token) {
+      return;
+    }
+
+    setIsBusy(true);
+    setMessage("");
+    try {
+      await loadTickets();
+      setSelectedTicket(null);
+      setMessage("Tickets atualizados com sucesso.");
+    } catch (error) {
+      setMessage(error instanceof Error ? error.message : "Falha ao listar tickets.");
+    } finally {
+      setIsBusy(false);
+    }
+  };
+
+  const onChangeTicketBoardTab = (tab: TicketBoardTab) => {
+    setTicketBoardTab(tab);
+    if (selectedTicket) {
+      const willBeVisible =
+        tab === "abertos"
+          ? selectedTicket.status === "ABERTO" || selectedTicket.status === "EM_ANDAMENTO"
+          : tab === "resolvidos"
+            ? selectedTicket.status === "RESOLVIDO"
+            : selectedTicket.status === "CANCELADO";
+      if (!willBeVisible) {
+        setSelectedTicket(null);
+      }
+    }
+  };
+
+  const onClearTicketFilters = async () => {
+    const next = emptyTicketFilters();
+    setTicketFilters(next);
+    setSelectedTicket(null);
+    if (token) {
+      try {
+        await loadTickets(token, next);
+      } catch {
+        // ignored
+      }
+    }
+  };
+
+  const onFilterMyTickets = async () => {
+    if (!user) {
+      return;
+    }
+
+    const next = {
+      ...ticketFilters,
+      responsavel_user_id: String(user.id)
+    };
+    setTicketFilters(next);
+
+    if (!token) {
+      return;
+    }
+
+    setIsBusy(true);
+    setMessage("");
+    try {
+      await loadTickets(token, next);
+      setSelectedTicket(null);
+      setMessage("Filtro aplicado: meus tickets.");
+    } catch (error) {
+      setMessage(error instanceof Error ? error.message : "Falha ao filtrar meus tickets.");
+    } finally {
+      setIsBusy(false);
+    }
+  };
+
+  const onCreateTicket = async (event: FormEvent) => {
+    event.preventDefault();
+    if (!token || !canManageInstruments) {
+      return;
+    }
+
+    if (ticketForm.titulo.trim().length < 3) {
+      setMessage("Informe um titulo com pelo menos 3 caracteres.");
+      return;
+    }
+
+    setIsBusy(true);
+    setMessage("");
+    try {
+      const created = await createTicket(token, {
+        titulo: ticketForm.titulo.trim(),
+        descricao: ticketForm.descricao.trim() === "" ? undefined : ticketForm.descricao.trim(),
+        prioridade: ticketForm.prioridade,
+        prazo_alvo: ticketForm.prazo_alvo.trim() === "" ? undefined : ticketForm.prazo_alvo,
+        instrument_id: ticketForm.instrument_id.trim() === "" ? undefined : Number(ticketForm.instrument_id),
+        instrumento_informado:
+          ticketForm.instrumento_informado.trim() === "" ? undefined : ticketForm.instrumento_informado.trim(),
+        responsavel_user_id:
+          ticketForm.responsavel_user_id.trim() === "" ? undefined : Number(ticketForm.responsavel_user_id)
+      });
+
+      setTicketForm(emptyTicketForm());
+      setTickets((prev) => [created, ...prev]);
+      setSelectedTicket(created);
+      setMessage(`Ticket ${created.codigo} criado com sucesso.`);
+    } catch (error) {
+      setMessage(error instanceof Error ? error.message : "Falha ao criar ticket.");
+    } finally {
+      setIsBusy(false);
+    }
+  };
+
+  const onSelectTicket = async (id: number) => {
+    if (!token) {
+      return;
+    }
+
+    setIsBusy(true);
+    setMessage("");
+    try {
+      const full = await getTicketById(token, id);
+      setSelectedTicket(full);
+      setTicketResolutionReason(full.motivo_resolucao ?? "");
+    } catch (error) {
+      setMessage(error instanceof Error ? error.message : "Falha ao carregar ticket.");
+    } finally {
+      setIsBusy(false);
+    }
+  };
+
+  const onUpdateTicketStatus = async (id: number, status: TicketStatus) => {
+    if (!token || !canManageInstruments) {
+      return;
+    }
+
+    setIsBusy(true);
+    setMessage("");
+    try {
+      if (status === "RESOLVIDO" && ticketResolutionReason.trim().length < 8) {
+        setMessage("Informe um motivo de resolucao com pelo menos 8 caracteres.");
+        setIsBusy(false);
+        return;
+      }
+
+      const updated = await updateTicket(token, id, {
+        status,
+        motivo_resolucao: status === "RESOLVIDO" ? ticketResolutionReason.trim() : undefined
+      });
+      setTickets((prev) => prev.map((item) => (item.id === id ? updated : item)));
+      if (selectedTicket?.id === id) {
+        setSelectedTicket(updated);
+        if (status !== "RESOLVIDO") {
+          setTicketResolutionReason("");
+        }
+      }
+      if (status === "RESOLVIDO") {
+        setTicketBoardTab("resolvidos");
+      } else if (status === "CANCELADO") {
+        setTicketBoardTab("cancelados");
+      } else {
+        setTicketBoardTab("abertos");
+      }
+      setMessage(`Ticket ${updated.codigo} atualizado.`);
+    } catch (error) {
+      setMessage(error instanceof Error ? error.message : "Falha ao atualizar status do ticket.");
+    } finally {
+      setIsBusy(false);
+    }
+  };
+
+  const onUpdateTicketPriority = async (id: number, prioridade: TicketPriority) => {
+    if (!token || !canManageInstruments) {
+      return;
+    }
+
+    setIsBusy(true);
+    setMessage("");
+    try {
+      const updated = await updateTicket(token, id, { prioridade });
+      setTickets((prev) => prev.map((item) => (item.id === id ? updated : item)));
+      if (selectedTicket?.id === id) {
+        setSelectedTicket(updated);
+      }
+      setMessage(`Prioridade atualizada no ticket ${updated.codigo}.`);
+    } catch (error) {
+      setMessage(error instanceof Error ? error.message : "Falha ao atualizar prioridade.");
+    } finally {
+      setIsBusy(false);
+    }
+  };
+
+  const onUpdateTicketDueDate = async (id: number, prazoAlvo: string) => {
+    if (!token || !canManageInstruments) {
+      return;
+    }
+
+    setIsBusy(true);
+    setMessage("");
+    try {
+      const updated = await updateTicket(token, id, { prazo_alvo: prazoAlvo.trim() === "" ? null : prazoAlvo });
+      setTickets((prev) => prev.map((item) => (item.id === id ? updated : item)));
+      if (selectedTicket?.id === id) {
+        setSelectedTicket(updated);
+      }
+      setMessage(`Prazo alvo atualizado no ticket ${updated.codigo}.`);
+    } catch (error) {
+      setMessage(error instanceof Error ? error.message : "Falha ao atualizar prazo alvo.");
+    } finally {
+      setIsBusy(false);
+    }
+  };
+
+  const onAssignTicket = async (id: number, responsavelUserId: string) => {
+    if (!token || !canManageInstruments) {
+      return;
+    }
+
+    setIsBusy(true);
+    setMessage("");
+    try {
+      const updated = await updateTicket(token, id, {
+        responsavel_user_id: responsavelUserId.trim() === "" ? null : Number(responsavelUserId)
+      });
+      setTickets((prev) => prev.map((item) => (item.id === id ? updated : item)));
+      if (selectedTicket?.id === id) {
+        setSelectedTicket(updated);
+      }
+      setMessage(`Responsavel atualizado no ticket ${updated.codigo}.`);
+    } catch (error) {
+      setMessage(error instanceof Error ? error.message : "Falha ao atribuir responsavel.");
+    } finally {
+      setIsBusy(false);
+    }
+  };
+
+  const onAddTicketComment = async () => {
+    if (!token || !selectedTicket || !canManageInstruments) {
+      return;
+    }
+
+    if (ticketCommentText.trim().length < 2) {
+      setMessage("Comentario deve ter pelo menos 2 caracteres.");
+      return;
+    }
+
+    setIsBusy(true);
+    setMessage("");
+    try {
+      const updated = await addTicketComment(token, selectedTicket.id, ticketCommentText.trim());
+      setSelectedTicket(updated);
+      setTickets((prev) => prev.map((item) => (item.id === updated.id ? updated : item)));
+      setTicketCommentText("");
+      setMessage("Comentario registrado no ticket.");
+    } catch (error) {
+      setMessage(error instanceof Error ? error.message : "Falha ao registrar comentario.");
+    } finally {
+      setIsBusy(false);
+    }
+  };
+
   const onAddRepasse = async () => {
     if (!token || instrumentPageId === null || !canManageInstruments || !profileInstrument) {
       return;
@@ -1911,6 +2741,8 @@ export default function App() {
 
       setInstruments((prev) => prev.map((item) => (item.id === updatedWithRepasses.id ? updatedWithRepasses : item)));
       setSelectedInstrument(updatedWithRepasses);
+      setReportData(null);
+      setObraReportData(null);
       setRepasseValorInput(formatCurrencyInput(0));
       setRepasseDataInput(todayDate());
       setMessage("Repasse cadastrado.");
@@ -1933,6 +2765,8 @@ export default function App() {
       const updatedWithRepasses = await withLoadedRepasses(token, updated);
       setInstruments((prev) => prev.map((item) => (item.id === updatedWithRepasses.id ? updatedWithRepasses : item)));
       setSelectedInstrument(updatedWithRepasses);
+      setReportData(null);
+      setObraReportData(null);
       setMessage("Repasse removido.");
     } catch (error) {
       setMessage(error instanceof Error ? error.message : "Falha ao remover repasse.");
@@ -2023,6 +2857,30 @@ export default function App() {
           <label>
             Concedente *
             <input value={form.concedente} onChange={(e) => onChangeForm("concedente", e.target.value)} required />
+          </label>
+          <label>
+            Banco
+            <input
+              value={form.banco}
+              onChange={(e) => onChangeForm("banco", e.target.value)}
+              placeholder="Ex.: Banco do Brasil"
+            />
+          </label>
+          <label>
+            Agencia
+            <input
+              value={form.agencia}
+              onChange={(e) => onChangeForm("agencia", e.target.value)}
+              placeholder="Ex.: 1234"
+            />
+          </label>
+          <label>
+            Conta
+            <input
+              value={form.conta}
+              onChange={(e) => onChangeForm("conta", e.target.value)}
+              placeholder="Ex.: 56789-0"
+            />
           </label>
           <label>
             Convenete
@@ -2288,6 +3146,13 @@ export default function App() {
           </button>
           <button
             type="button"
+            className={activeView === "tickets" ? "menu-item active" : "menu-item"}
+            onClick={() => onChangeView("tickets")}
+          >
+            Tickets
+          </button>
+          <button
+            type="button"
             className={activeView === "relatorios" ? "menu-item active" : "menu-item"}
             onClick={() => onChangeView("relatorios")}
           >
@@ -2344,7 +3209,9 @@ export default function App() {
                       ? "Gestao de Usuarios"
                     : activeView === "auditoria"
                       ? "Auditoria e Historico"
-                      : "Relatorios Analiticos"}
+                      : activeView === "tickets"
+                        ? "Central de Tickets"
+                       : "Relatorios Analiticos"}
               </h2>
               <p className="subtitle">
                 {isInstrumentProfileView
@@ -2383,59 +3250,198 @@ export default function App() {
           </section>
 
           {activeView === "dashboard" ? (
-            <section className="dashboard-grid">
-              <div className="card kpi-card">
-                <p className="eyebrow">Registros</p>
-                <h3>{dashboard.totalRegistros}</h3>
-              </div>
-              <div className="card kpi-card">
-                <p className="eyebrow">Ativos</p>
-                <h3>{dashboard.ativos}</h3>
-              </div>
-              <div className="card kpi-card">
-                <p className="eyebrow">Inativos</p>
-                <h3>{dashboard.inativos}</h3>
-              </div>
-              <div className="card kpi-card">
-                <p className="eyebrow">Alertas (30 dias)</p>
-                <h3>{dashboard.alertas}</h3>
+            <section className="dashboard">
+              <div className="card">
+                <h3>
+                  Painel inicial {user?.role ? `(${user.role})` : ""}
+                </h3>
+                <p className="subtitle">Resumo executivo para tomada de decisao rapida ao entrar no sistema.</p>
               </div>
 
-              <div className="card wide-card">
-                <h3>Valor global</h3>
-                <p className="total-value">{formatCurrency(dashboard.valorTotal)}</p>
+              <div className="dashboard-kpi-grid">
+                <div className="card kpi-card">
+                  <p className="eyebrow">Instrumentos</p>
+                  <h3>{dashboard.totalRegistros}</h3>
+                </div>
+                <div className="card kpi-card">
+                  <p className="eyebrow">Ativos</p>
+                  <h3>{dashboard.ativos}</h3>
+                </div>
+                <div className="card kpi-card">
+                  <p className="eyebrow">Valor pactuado</p>
+                  <h3>{formatCurrency(dashboard.valorTotal)}</h3>
+                </div>
+                <div className="card kpi-card">
+                  <p className="eyebrow">Valor ja repassado</p>
+                  <h3>{formatCurrency(dashboardInsights.totalRepassado)}</h3>
+                </div>
+                <div className="card kpi-card">
+                  <p className="eyebrow">% medio repassado</p>
+                  <h3>{dashboardInsights.percentualMedioRepassado.toFixed(2)}%</h3>
+                </div>
+                <div className="card kpi-card">
+                  <p className="eyebrow">Alertas de prazo</p>
+                  <h3>{dashboard.alertas}</h3>
+                </div>
+                {user?.role === "ADMIN" ? (
+                  <>
+                    <div className="card kpi-card">
+                      <p className="eyebrow">Usuarios cadastrados</p>
+                      <h3>{dashboardInsights.usuarios}</h3>
+                    </div>
+                    <div className="card kpi-card">
+                      <p className="eyebrow">Logs auditoria</p>
+                      <h3>{dashboardInsights.logs}</h3>
+                    </div>
+                  </>
+                ) : user?.role === "GESTOR" ? (
+                  <>
+                    <div className="card kpi-card">
+                      <p className="eyebrow">Em execucao</p>
+                      <h3>{dashboardInsights.emExecucao}</h3>
+                    </div>
+                    <div className="card kpi-card">
+                      <p className="eyebrow">Prestacao pendente</p>
+                      <h3>{dashboardInsights.prestacaoPendente}</h3>
+                    </div>
+                  </>
+                ) : (
+                  <>
+                    <div className="card kpi-card">
+                      <p className="eyebrow">Vencidos</p>
+                      <h3>{dashboardInsights.vencidos}</h3>
+                    </div>
+                    <div className="card kpi-card">
+                      <p className="eyebrow">Em execucao</p>
+                      <h3>{dashboardInsights.emExecucao}</h3>
+                    </div>
+                  </>
+                )}
+              </div>
+
+              <div className="dashboard-panels-grid">
+                <div className="card">
+                  <h3>Prazos criticos (top 5)</h3>
+                  <div className="table-wrap table-wrap-compact">
+                    <table>
+                      <thead>
+                        <tr>
+                          <th>Instrumento</th>
+                          <th>Vigencia</th>
+                          <th>Prestacao</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {dashboardInsights.alertasCriticos.length === 0 ? (
+                          <tr>
+                            <td colSpan={3}>Sem alertas criticos no momento.</td>
+                          </tr>
+                        ) : (
+                          dashboardInsights.alertasCriticos.map((item) => (
+                            <tr key={item.instrumento_id}>
+                              <td>{item.instrumento}</td>
+                              <td>{item.dias_para_vigencia_fim} dias</td>
+                              <td>{item.dias_para_prestacao_contas ?? "-"} dias</td>
+                            </tr>
+                          ))
+                        )}
+                      </tbody>
+                    </table>
+                  </div>
+                </div>
+
+                <div className="card">
+                  <h3>Obras com menor execucao financeira</h3>
+                  <div className="table-wrap table-wrap-compact">
+                    <table>
+                      <thead>
+                        <tr>
+                          <th>Instrumento</th>
+                          <th>Concedente</th>
+                          <th>% repassado</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {dashboardInsights.obrasComBaixoRepasse.length === 0 ? (
+                          <tr>
+                            <td colSpan={3}>Sem obras para analise.</td>
+                          </tr>
+                        ) : (
+                          dashboardInsights.obrasComBaixoRepasse.map((item) => (
+                            <tr key={item.id}>
+                              <td>{item.instrumento}</td>
+                              <td>{item.concedente}</td>
+                              <td>{item.percentual_repassado.toFixed(2)}%</td>
+                            </tr>
+                          ))
+                        )}
+                      </tbody>
+                    </table>
+                  </div>
+                </div>
+
+                <div className="card">
+                  <h3>Distribuicao por fluxo</h3>
+                  <div className="table-wrap table-wrap-compact">
+                    <table>
+                      <thead>
+                        <tr>
+                          <th>Fluxo</th>
+                          <th>Quantidade</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {dashboardInsights.porFluxo.map((item) => (
+                          <tr key={item.fluxo}>
+                            <td>{item.fluxo}</td>
+                            <td>{item.quantidade}</td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+                </div>
+
+                <div className="card">
+                  <h3>Top concedentes</h3>
+                  <div className="table-wrap table-wrap-compact">
+                    <table>
+                      <thead>
+                        <tr>
+                          <th>Concedente</th>
+                          <th>Instrumentos</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {dashboardInsights.topConcedentes.length === 0 ? (
+                          <tr>
+                            <td colSpan={2}>Sem dados de concedente.</td>
+                          </tr>
+                        ) : (
+                          dashboardInsights.topConcedentes.map((item) => (
+                            <tr key={item.concedente}>
+                              <td>{item.concedente}</td>
+                              <td>{item.quantidade}</td>
+                            </tr>
+                          ))
+                        )}
+                      </tbody>
+                    </table>
+                  </div>
+                </div>
+              </div>
+
+              <div className="card">
+                <h3>Acoes rapidas</h3>
                 <div className="action-row">
                   <button type="button" onClick={() => refreshData()} disabled={isBusy}>
                     Atualizar dashboard
                   </button>
-                  <button type="button" className="secondary" onClick={() => exportCsv(overviewItems)}>
-                    Exportar CSV
-                  </button>
-                  <button type="button" className="secondary" onClick={() => exportExcel(overviewItems)}>
-                    Exportar Excel
-                  </button>
-                </div>
-              </div>
-
-              <div className="card wide-card">
-                <h3>Status dos instrumentos</h3>
-                <div className="table-wrap">
-                  <table>
-                    <thead>
-                      <tr>
-                        <th>Status</th>
-                        <th>Quantidade</th>
-                      </tr>
-                    </thead>
-                    <tbody>
-                      {dashboard.porStatus.map((item) => (
-                        <tr key={item.status}>
-                          <td>{item.status}</td>
-                          <td>{item.quantidade}</td>
-                        </tr>
-                      ))}
-                    </tbody>
-                  </table>
+                  <button type="button" className="secondary" onClick={() => onChangeView("instrumentos")}>Instrumentos</button>
+                  <button type="button" className="secondary" onClick={() => onChangeView("relatorios")}>Relatorios</button>
+                  {isAdmin && (
+                    <button type="button" className="secondary" onClick={() => onChangeView("usuarios")}>Usuarios</button>
+                  )}
                 </div>
               </div>
             </section>
@@ -2451,7 +3457,7 @@ export default function App() {
 
               <div className="card filters-card">
                 <h3>Filtros da listagem</h3>
-                <div className="filters-grid columns-5">
+                <div className="filters-grid columns-4">
                   <label>
                     Status
                     <select
@@ -2471,10 +3477,32 @@ export default function App() {
 
                   <label>
                     Concedente
-                    <input
+                    <select
                       value={filters.concedente}
                       onChange={(e) => setFilters((prev) => ({ ...prev, concedente: e.target.value }))}
-                    />
+                    >
+                      <option value="">Todos</option>
+                      {concedenteOptions.map((option) => (
+                        <option key={option} value={option}>
+                          {option}
+                        </option>
+                      ))}
+                    </select>
+                  </label>
+
+                  <label>
+                    Convenente
+                    <select
+                      value={filters.convenete_id}
+                      onChange={(e) => setFilters((prev) => ({ ...prev, convenete_id: e.target.value }))}
+                    >
+                      <option value="">Todos</option>
+                      {convenetes.map((item) => (
+                        <option key={item.id} value={item.id}>
+                          {item.nome}
+                        </option>
+                      ))}
+                    </select>
                   </label>
 
                   <label>
@@ -2588,6 +3616,10 @@ export default function App() {
                         </p>
                         <p>
                           <strong>Concedente:</strong> {profileInstrument.concedente}
+                        </p>
+                        <p>
+                          <strong>Dados bancarios:</strong>{" "}
+                          {formatBankInfo(profileInstrument) || "-"}
                         </p>
                         <p>
                           <strong>Convenete:</strong>{" "}
@@ -3319,7 +4351,7 @@ export default function App() {
                               </button>
                               {!checklistSummary?.pode_iniciar_execucao && (
                                 <p className="subtitle">
-                                  Pendencias: {checklistSummary?.pendentes_obrigatorios.join(", ") || "adicione itens obrigatorios"}
+                                  Para iniciar execucao, faltam: {checklistSummary?.pendentes_obrigatorios.join(", ") || "adicione itens obrigatorios"}
                                 </p>
                               )}
                             </div>
@@ -3586,6 +4618,11 @@ export default function App() {
 
                   <div className="card table-card">
                     <h3>Usuarios cadastrados</h3>
+                    <div className="action-row compact">
+                      <button type="button" className="secondary" onClick={onSeedDemoData} disabled={isBusy}>
+                        Carregar 10 instrumentos demo
+                      </button>
+                    </div>
                     <div className="table-wrap">
                       <table>
                         <thead>
@@ -3641,6 +4678,462 @@ export default function App() {
                   <p>Acesso restrito a administradores.</p>
                 </div>
               )}
+            </section>
+          ) : activeView === "tickets" ? (
+            <section className="dashboard">
+              <div className="card filters-card">
+                <h3>Filtros de tickets</h3>
+                <div className="filters-grid columns-5">
+                  <label>
+                    Status
+                    <select
+                      value={ticketFilters.status}
+                      onChange={(e) =>
+                        setTicketFilters((prev) => ({ ...prev, status: e.target.value as TicketStatus | "" }))
+                      }
+                    >
+                      <option value="">Todos</option>
+                      {TICKET_STATUS_OPTIONS.map((option) => (
+                        <option key={option} value={option}>
+                          {TICKET_STATUS_LABELS[option]}
+                        </option>
+                      ))}
+                    </select>
+                  </label>
+                  <label>
+                    Prioridade
+                    <select
+                      value={ticketFilters.prioridade}
+                      onChange={(e) =>
+                        setTicketFilters((prev) => ({ ...prev, prioridade: e.target.value as TicketPriority | "" }))
+                      }
+                    >
+                      <option value="">Todas</option>
+                      {TICKET_PRIORITY_OPTIONS.map((option) => (
+                        <option key={option} value={option}>
+                          {TICKET_PRIORITY_LABELS[option]}
+                        </option>
+                      ))}
+                    </select>
+                  </label>
+                  <label>
+                    Origem
+                    <select
+                      value={ticketFilters.origem}
+                      onChange={(e) =>
+                        setTicketFilters((prev) => ({ ...prev, origem: e.target.value as TicketSource | "" }))
+                      }
+                    >
+                      <option value="">Todas</option>
+                      {TICKET_SOURCE_OPTIONS.map((option) => (
+                        <option key={option} value={option}>
+                          {TICKET_SOURCE_LABELS[option]}
+                        </option>
+                      ))}
+                    </select>
+                  </label>
+                  <label>
+                    Instrumento
+                    <select
+                      value={ticketFilters.instrument_id}
+                      onChange={(e) => setTicketFilters((prev) => ({ ...prev, instrument_id: e.target.value }))}
+                    >
+                      <option value="">Todos</option>
+                      {sortedInstruments.map((item) => (
+                        <option key={item.id} value={String(item.id)}>
+                          {item.instrumento} | proposta {item.proposta}
+                        </option>
+                      ))}
+                    </select>
+                  </label>
+                  <label>
+                    Responsavel
+                    <select
+                      value={ticketFilters.responsavel_user_id}
+                      onChange={(e) =>
+                        setTicketFilters((prev) => ({ ...prev, responsavel_user_id: e.target.value }))
+                      }
+                      disabled={ticketAssignableUsers.length === 0}
+                    >
+                      <option value="">Todos</option>
+                      {ticketAssignableUsers.map((userItem) => (
+                        <option key={userItem.id} value={String(userItem.id)}>
+                          {userItem.nome} ({userItem.role})
+                        </option>
+                      ))}
+                    </select>
+                  </label>
+                  <label>
+                    Busca livre
+                    <input
+                      value={ticketFilters.q}
+                      onChange={(e) => setTicketFilters((prev) => ({ ...prev, q: e.target.value }))}
+                      placeholder="Codigo, titulo, descricao"
+                    />
+                  </label>
+                  <label className="ticket-overdue-toggle">
+                    <span>Somente atrasados</span>
+                    <input
+                      type="checkbox"
+                      checked={ticketFilters.somente_atrasados}
+                      onChange={(e) =>
+                        setTicketFilters((prev) => ({ ...prev, somente_atrasados: e.target.checked }))
+                      }
+                    />
+                  </label>
+                </div>
+                <div className="action-row">
+                  <button type="button" onClick={onApplyTicketFilters} disabled={isBusy}>
+                    Aplicar filtros
+                  </button>
+                  <button type="button" className="secondary" onClick={onClearTicketFilters} disabled={isBusy}>
+                    Limpar filtros
+                  </button>
+                  <button type="button" className="secondary" onClick={onFilterMyTickets} disabled={isBusy || !user}>
+                    Meus tickets
+                  </button>
+                </div>
+              </div>
+
+              {canManageInstruments && (
+                <div className="card editor-card">
+                  <h3>Abrir ticket manual</h3>
+                  <form className="form-grid" onSubmit={onCreateTicket}>
+                    <div className="filters-grid columns-4">
+                      <label>
+                        Titulo *
+                        <input
+                          value={ticketForm.titulo}
+                          onChange={(e) => setTicketForm((prev) => ({ ...prev, titulo: e.target.value }))}
+                          placeholder="Ex.: Pendencia documental no instrumento"
+                          required
+                        />
+                      </label>
+                      <label>
+                        Prioridade
+                        <select
+                          value={ticketForm.prioridade}
+                          onChange={(e) =>
+                            setTicketForm((prev) => ({ ...prev, prioridade: e.target.value as TicketPriority }))
+                          }
+                        >
+                          {TICKET_PRIORITY_OPTIONS.map((option) => (
+                            <option key={option} value={option}>
+                              {TICKET_PRIORITY_LABELS[option]}
+                            </option>
+                          ))}
+                        </select>
+                      </label>
+                      <label>
+                        Prazo alvo (SLA)
+                        <input
+                          type="date"
+                          value={ticketForm.prazo_alvo}
+                          onChange={(e) => setTicketForm((prev) => ({ ...prev, prazo_alvo: e.target.value }))}
+                        />
+                      </label>
+                      <label>
+                        Instrumento (opcional)
+                        <select
+                          value={ticketForm.instrument_id}
+                          onChange={(e) => setTicketForm((prev) => ({ ...prev, instrument_id: e.target.value }))}
+                        >
+                          <option value="">Nao associado</option>
+                          {sortedInstruments.map((item) => (
+                            <option key={item.id} value={String(item.id)}>
+                              {item.instrumento} | proposta {item.proposta}
+                            </option>
+                          ))}
+                        </select>
+                      </label>
+                      <label>
+                        Instrumento informado
+                        <input
+                          value={ticketForm.instrumento_informado}
+                          onChange={(e) =>
+                            setTicketForm((prev) => ({ ...prev, instrumento_informado: e.target.value }))
+                          }
+                          placeholder="Texto livre para identificacao"
+                        />
+                      </label>
+                      <label>
+                        Responsavel inicial
+                        <select
+                          value={ticketForm.responsavel_user_id}
+                          onChange={(e) =>
+                            setTicketForm((prev) => ({ ...prev, responsavel_user_id: e.target.value }))
+                          }
+                        >
+                          <option value="">Nao atribuido</option>
+                          {ticketAssignableUsers.map((userItem) => (
+                            <option key={userItem.id} value={String(userItem.id)}>
+                              {userItem.nome} ({userItem.role})
+                            </option>
+                          ))}
+                        </select>
+                      </label>
+                    </div>
+                    <label>
+                      Descricao
+                      <textarea
+                        rows={3}
+                        value={ticketForm.descricao}
+                        onChange={(e) => setTicketForm((prev) => ({ ...prev, descricao: e.target.value }))}
+                        placeholder="Contexto do atendimento"
+                      />
+                    </label>
+                    <div className="action-row">
+                      <button type="submit" disabled={isBusy}>
+                        Criar ticket
+                      </button>
+                    </div>
+                  </form>
+                </div>
+              )}
+
+              <div className="tickets-layout">
+                <div className="card table-card">
+                  <div className="ticket-board-tabs">
+                    <button
+                      type="button"
+                      className={ticketBoardTab === "abertos" ? "ticket-board-tab active" : "ticket-board-tab"}
+                      onClick={() => onChangeTicketBoardTab("abertos")}
+                    >
+                      Em aberto ({openTickets.length})
+                    </button>
+                    <button
+                      type="button"
+                      className={ticketBoardTab === "resolvidos" ? "ticket-board-tab active" : "ticket-board-tab"}
+                      onClick={() => onChangeTicketBoardTab("resolvidos")}
+                    >
+                      Resolvidos ({resolvedTickets.length})
+                    </button>
+                    <button
+                      type="button"
+                      className={ticketBoardTab === "cancelados" ? "ticket-board-tab active" : "ticket-board-tab"}
+                      onClick={() => onChangeTicketBoardTab("cancelados")}
+                    >
+                      Cancelados ({canceledTickets.length})
+                    </button>
+                  </div>
+
+                  <h3>
+                    {ticketBoardTab === "abertos"
+                      ? `Fila de tickets em aberto (${openTickets.length})`
+                      : ticketBoardTab === "resolvidos"
+                        ? `Fila de tickets resolvidos (${resolvedTickets.length})`
+                        : `Fila de tickets cancelados (${canceledTickets.length})`}
+                  </h3>
+                  {visibleTickets.length === 0 ? (
+                    <p>Nenhum ticket encontrado.</p>
+                  ) : (
+                    <div className="ticket-list">
+                      {visibleTickets.map((item) => {
+                        const isSelected = selectedTicket?.id === item.id;
+                        return (
+                          <button
+                            key={item.id}
+                            type="button"
+                            className={isSelected ? "ticket-item active" : "ticket-item"}
+                            onClick={() => onSelectTicket(item.id)}
+                          >
+                            <div className="ticket-item-head">
+                              <strong>{item.codigo}</strong>
+                              <span>{TICKET_STATUS_LABELS[item.status]}</span>
+                            </div>
+                            <p>{item.titulo}</p>
+                            <div className="ticket-item-meta">
+                              <span className={`ticket-priority-chip ${item.prioridade.toLowerCase()}`}>
+                                {TICKET_PRIORITY_LABELS[item.prioridade]}
+                              </span>
+                              <span>{item.origem === "MANUAL" ? "Manual" : "Email"}</span>
+                              <span>{item.instrumento?.instrumento ?? item.instrumento_informado ?? "Sem instrumento"}</span>
+                              <span>{item.responsavel?.nome ?? "Sem responsavel"}</span>
+                            </div>
+                            <p className="subtitle">SLA: {formatTicketSla(item)}</p>
+                            <p className="subtitle">
+                              Atualizado em {new Date(item.updated_at).toLocaleString("pt-BR")}
+                            </p>
+                          </button>
+                        );
+                      })}
+                    </div>
+                  )}
+                </div>
+
+                <div className="card table-card">
+                  {!selectedTicket ? (
+                    <p>Selecione um ticket para ver detalhes e comentarios.</p>
+                  ) : (
+                    <div className="ticket-detail">
+                      <div>
+                        <p className="eyebrow">{selectedTicket.codigo}</p>
+                        <h3>{selectedTicket.titulo}</h3>
+                        <p className="subtitle">
+                          {TICKET_STATUS_LABELS[selectedTicket.status]} | {TICKET_SOURCE_LABELS[selectedTicket.origem]} | Criado em {" "}
+                          {new Date(selectedTicket.created_at).toLocaleString("pt-BR")}
+                        </p>
+                        <p className="subtitle">
+                          Prioridade: {TICKET_PRIORITY_LABELS[selectedTicket.prioridade]} | SLA: {formatTicketSla(selectedTicket)}
+                        </p>
+                        <p className="subtitle">
+                          Criado por {selectedTicket.criado_por.nome} ({selectedTicket.criado_por.role})
+                        </p>
+                      </div>
+
+                      <div className="details-grid">
+                        <p>
+                          <strong>Instrumento:</strong>{" "}
+                          {selectedTicket.instrumento
+                            ? `${selectedTicket.instrumento.instrumento} (proposta ${selectedTicket.instrumento.proposta})`
+                            : selectedTicket.instrumento_informado ?? "Nao informado"}
+                        </p>
+                        <p>
+                          <strong>Responsavel:</strong> {selectedTicket.responsavel?.nome ?? "Nao atribuido"}
+                        </p>
+                        <p>
+                          <strong>Descricao:</strong> {selectedTicket.descricao ?? "Sem descricao"}
+                        </p>
+                        <p>
+                          <strong>Prazo alvo:</strong>{" "}
+                          {selectedTicket.prazo_alvo ? formatDateOnlyPtBr(selectedTicket.prazo_alvo) : "Nao definido"}
+                        </p>
+                        {selectedTicket.resolvido_em && (
+                          <p>
+                            <strong>Resolvido em:</strong> {new Date(selectedTicket.resolvido_em).toLocaleString("pt-BR")}
+                          </p>
+                        )}
+                        {selectedTicket.motivo_resolucao && (
+                          <p>
+                            <strong>Motivo da resolucao:</strong> {selectedTicket.motivo_resolucao}
+                          </p>
+                        )}
+                      </div>
+
+                      {canManageInstruments && (
+                        <>
+                          <div className="action-row compact">
+                            <label>
+                              Prioridade
+                              <select
+                                value={selectedTicket.prioridade}
+                                onChange={(e) => onUpdateTicketPriority(selectedTicket.id, e.target.value as TicketPriority)}
+                                disabled={isBusy}
+                              >
+                                {TICKET_PRIORITY_OPTIONS.map((priority) => (
+                                  <option key={priority} value={priority}>
+                                    {TICKET_PRIORITY_LABELS[priority]}
+                                  </option>
+                                ))}
+                              </select>
+                            </label>
+                            <label>
+                              Prazo alvo
+                              <input
+                                type="date"
+                                value={selectedTicket.prazo_alvo ? selectedTicket.prazo_alvo.slice(0, 10) : ""}
+                                onChange={(e) => onUpdateTicketDueDate(selectedTicket.id, e.target.value)}
+                                disabled={isBusy}
+                              />
+                            </label>
+                          </div>
+
+                          <div className="ticket-resolution-box">
+                            <label>
+                              Motivo de resolucao (obrigatorio para concluir)
+                              <textarea
+                                rows={2}
+                                value={ticketResolutionReason}
+                                onChange={(e) => setTicketResolutionReason(e.target.value)}
+                                placeholder="Descreva o que foi feito para resolver"
+                              />
+                            </label>
+                          </div>
+
+                          {selectedTicket.status === "RESOLVIDO" && (
+                            <div className="action-row compact">
+                              <button
+                                type="button"
+                                onClick={() => onUpdateTicketStatus(selectedTicket.id, "EM_ANDAMENTO")}
+                                disabled={isBusy}
+                              >
+                                Reabrir ticket
+                              </button>
+                            </div>
+                          )}
+
+                          <div className="action-row compact">
+                            {TICKET_STATUS_OPTIONS.map((status) => (
+                              <button
+                                key={status}
+                                type="button"
+                                className={selectedTicket.status === status ? "secondary" : "ghost"}
+                                onClick={() => onUpdateTicketStatus(selectedTicket.id, status)}
+                                disabled={isBusy || selectedTicket.status === status}
+                              >
+                                {TICKET_STATUS_LABELS[status]}
+                              </button>
+                            ))}
+                          </div>
+
+                          <div className="action-row compact">
+                            <label>
+                              Alterar responsavel
+                              <select
+                                value={selectedTicket.responsavel?.id ? String(selectedTicket.responsavel.id) : ""}
+                                onChange={(e) => onAssignTicket(selectedTicket.id, e.target.value)}
+                                disabled={isBusy}
+                              >
+                                <option value="">Nao atribuido</option>
+                                {ticketAssignableUsers.map((userItem) => (
+                                  <option key={userItem.id} value={String(userItem.id)}>
+                                    {userItem.nome} ({userItem.role})
+                                  </option>
+                                ))}
+                              </select>
+                            </label>
+                          </div>
+                        </>
+                      )}
+
+                      <div className="ticket-comments">
+                        <h3>Comentarios ({selectedTicket.comentarios.length})</h3>
+                        {selectedTicket.comentarios.length === 0 ? (
+                          <p className="subtitle">Nenhum comentario registrado.</p>
+                        ) : (
+                          <div className="ticket-comment-list">
+                            {selectedTicket.comentarios.map((comment) => (
+                              <article key={comment.id} className="ticket-comment-item">
+                                <p className="ticket-comment-head">
+                                  <strong>{comment.user.nome}</strong> ({comment.user.role})
+                                </p>
+                                <p className="subtitle">{new Date(comment.created_at).toLocaleString("pt-BR")}</p>
+                                <p>{comment.mensagem}</p>
+                              </article>
+                            ))}
+                          </div>
+                        )}
+
+                        {canManageInstruments && (
+                          <div className="ticket-comment-form">
+                            <textarea
+                              rows={3}
+                              value={ticketCommentText}
+                              onChange={(e) => setTicketCommentText(e.target.value)}
+                              placeholder="Adicionar comentario"
+                            />
+                            <div className="action-row compact">
+                              <button type="button" onClick={onAddTicketComment} disabled={isBusy}>
+                                Comentar
+                              </button>
+                            </div>
+                          </div>
+                        )}
+                      </div>
+                    </div>
+                  )}
+                </div>
+              </div>
             </section>
           ) : activeView === "auditoria" ? (
             <section className="dashboard">
@@ -3718,6 +5211,25 @@ export default function App() {
             </section>
           ) : (
             <section className="dashboard">
+              <div className="tab-row">
+                <button
+                  type="button"
+                  className={relatorioTab === "repasses" ? "tab active" : "tab"}
+                  onClick={() => setRelatorioTab("repasses")}
+                >
+                  Repasses
+                </button>
+                <button
+                  type="button"
+                  className={relatorioTab === "obras" ? "tab active" : "tab"}
+                  onClick={() => setRelatorioTab("obras")}
+                >
+                  Acompanhamento de Obras
+                </button>
+              </div>
+
+              {relatorioTab === "repasses" ? (
+              <>
               <div className="card filters-card">
                 <h3>Relatorio de repasses por convenete</h3>
                 <div className="filters-grid columns-4">
@@ -3886,6 +5398,11 @@ export default function App() {
                           <tr>
                             <th>Instrumento</th>
                             <th>Status</th>
+                            <th>Orgao concedente</th>
+                            <th>Banco</th>
+                            <th>Agencia</th>
+                            <th>Conta</th>
+                            <th>Prestacao de contas</th>
                             <th>Empresa vencedora</th>
                             <th>Valor pactuado</th>
                             <th>Ja repassado</th>
@@ -3896,13 +5413,18 @@ export default function App() {
                         <tbody>
                           {reportData.instrumentos.length === 0 ? (
                             <tr>
-                              <td colSpan={7}>Nenhum instrumento encontrado.</td>
+                              <td colSpan={12}>Nenhum instrumento encontrado.</td>
                             </tr>
                           ) : (
                             reportData.instrumentos.map((item) => (
                               <tr key={item.id}>
                                 <td>{item.instrumento}</td>
                                 <td>{item.status}</td>
+                                <td>{item.orgao_concedente}</td>
+                                <td>{item.banco ?? "-"}</td>
+                                <td>{item.agencia ?? "-"}</td>
+                                <td>{item.conta ?? "-"}</td>
+                                <td>{item.data_prestacao_contas ?? "-"}</td>
                                 <td>{item.empresa_vencedora ?? "-"}</td>
                                 <td>{formatCurrency(item.valor_pactuado)}</td>
                                 <td>{formatCurrency(item.valor_ja_repassado)}</td>
@@ -3949,6 +5471,266 @@ export default function App() {
                       </table>
                     </div>
                   </div>
+                </>
+              )}
+              </>
+              ) : (
+                <>
+                  <div className="card filters-card">
+                    <h3>Relatorio de acompanhamento de obras</h3>
+                    <div className="filters-grid columns-4">
+                      <label>
+                        Convenete
+                        <select
+                          value={obraReportFilters.convenete_id}
+                          onChange={(e) =>
+                            setObraReportFilters((prev) => ({
+                              ...prev,
+                              convenete_id: e.target.value,
+                              instrumento_id: ""
+                            }))
+                          }
+                        >
+                          <option value="">Todos</option>
+                          {convenetes.map((item) => (
+                            <option key={item.id} value={String(item.id)}>
+                              {item.nome}
+                            </option>
+                          ))}
+                        </select>
+                      </label>
+                      <label>
+                        Instrumento
+                        <select
+                          value={obraReportFilters.instrumento_id}
+                          onChange={(e) =>
+                            setObraReportFilters((prev) => ({ ...prev, instrumento_id: e.target.value }))
+                          }
+                        >
+                          <option value="">Todos</option>
+                          {obraReportInstrumentOptions.map((item) => (
+                            <option key={item.id} value={String(item.id)}>
+                              {item.instrumento} | proposta {item.proposta}
+                            </option>
+                          ))}
+                        </select>
+                      </label>
+                      <label>
+                        Status
+                        <select
+                          value={obraReportFilters.status}
+                          onChange={(e) =>
+                            setObraReportFilters((prev) => ({
+                              ...prev,
+                              status: e.target.value as InstrumentStatus | ""
+                            }))
+                          }
+                        >
+                          <option value="">Todos</option>
+                          {STATUS_OPTIONS.map((item) => (
+                            <option key={item} value={item}>
+                              {item}
+                            </option>
+                          ))}
+                        </select>
+                      </label>
+                      <label>
+                        Ativo
+                        <select
+                          value={obraReportFilters.ativo}
+                          onChange={(e) =>
+                            setObraReportFilters((prev) => ({ ...prev, ativo: e.target.value as "true" | "false" }))
+                          }
+                        >
+                          <option value="true">Sim</option>
+                          <option value="false">Nao</option>
+                        </select>
+                      </label>
+                      <label>
+                        Data de
+                        <input
+                          type="date"
+                          value={obraReportFilters.data_de}
+                          onChange={(e) =>
+                            setObraReportFilters((prev) => ({ ...prev, data_de: e.target.value }))
+                          }
+                        />
+                      </label>
+                      <label>
+                        Data ate
+                        <input
+                          type="date"
+                          value={obraReportFilters.data_ate}
+                          onChange={(e) =>
+                            setObraReportFilters((prev) => ({ ...prev, data_ate: e.target.value }))
+                          }
+                        />
+                      </label>
+                    </div>
+
+                    <div className="action-row">
+                      <button type="button" onClick={onApplyObraReportFilters} disabled={isBusy}>
+                        Gerar relatorio
+                      </button>
+                      <button type="button" className="secondary" onClick={onClearObraReportFilters}>
+                        Limpar filtros
+                      </button>
+                      <button
+                        type="button"
+                        className="secondary"
+                        onClick={() => obraReportData && exportObraReportCsv(obraReportData)}
+                        disabled={!obraReportData}
+                      >
+                        Exportar CSV
+                      </button>
+                      <button
+                        type="button"
+                        className="secondary"
+                        onClick={() => obraReportData && exportObraReportExcel(obraReportData)}
+                        disabled={!obraReportData}
+                      >
+                        Exportar Excel
+                      </button>
+                      <button
+                        type="button"
+                        className="secondary"
+                        onClick={() => onExportObraReportPdf("executivo")}
+                        disabled={!obraReportData}
+                      >
+                        PDF Executivo
+                      </button>
+                      <button
+                        type="button"
+                        className="secondary"
+                        onClick={() => onExportObraReportPdf("analitico")}
+                        disabled={!obraReportData}
+                      >
+                        PDF Analitico
+                      </button>
+                    </div>
+                  </div>
+
+                  {!obraReportData ? (
+                    <div className="card table-card">
+                      <p>Selecione os filtros e gere o relatorio para visualizar os dados.</p>
+                    </div>
+                  ) : (
+                    <>
+                      <div className="report-kpi-grid">
+                        <div className="card kpi-card">
+                          <p className="eyebrow">Obras monitoradas</p>
+                          <h3>{obraReportData.kpis.obras_monitoradas}</h3>
+                        </div>
+                        <div className="card kpi-card">
+                          <p className="eyebrow">% medio da obra</p>
+                          <h3>{obraReportData.kpis.percentual_medio_obra.toFixed(2)}%</h3>
+                        </div>
+                        <div className="card kpi-card">
+                          <p className="eyebrow">Boletins no periodo</p>
+                          <h3>{formatCurrency(obraReportData.kpis.valor_total_boletins_periodo)}</h3>
+                        </div>
+                        <div className="card kpi-card">
+                          <p className="eyebrow">Risco alto</p>
+                          <h3>{obraReportData.kpis.obras_risco_alto}</h3>
+                        </div>
+                      </div>
+
+                      <div className="report-charts-grid">
+                        <div className="card">
+                          <h3>Evolucao mensal de boletins</h3>
+                          <div className="report-bars">
+                            {obraReportData.series.boletins_mensais.length === 0 ? (
+                              <p className="subtitle">Sem boletins no periodo.</p>
+                            ) : (
+                              obraReportData.series.boletins_mensais.map((item) => {
+                                const max = Math.max(...obraReportData.series.boletins_mensais.map((point) => point.valor), 1);
+                                const width = (item.valor / max) * 100;
+                                return (
+                                  <div key={item.mes} className="report-bar-row">
+                                    <span>{item.mes}</span>
+                                    <div className="report-bar-track">
+                                      <div className="report-bar-fill" style={{ width: `${width}%` }} />
+                                    </div>
+                                    <strong>{formatCurrency(item.valor)}</strong>
+                                  </div>
+                                );
+                              })
+                            )}
+                          </div>
+                        </div>
+                        <div className="card">
+                          <h3>Evolucao mensal de repasses</h3>
+                          <div className="report-bars">
+                            {obraReportData.series.repasses_mensais.length === 0 ? (
+                              <p className="subtitle">Sem repasses no periodo.</p>
+                            ) : (
+                              obraReportData.series.repasses_mensais.map((item) => {
+                                const max = Math.max(...obraReportData.series.repasses_mensais.map((point) => point.valor), 1);
+                                const width = (item.valor / max) * 100;
+                                return (
+                                  <div key={item.mes} className="report-bar-row">
+                                    <span>{item.mes}</span>
+                                    <div className="report-bar-track">
+                                      <div className="report-bar-fill secondary" style={{ width: `${width}%` }} />
+                                    </div>
+                                    <strong>{formatCurrency(item.valor)}</strong>
+                                  </div>
+                                );
+                              })
+                            )}
+                          </div>
+                        </div>
+                      </div>
+
+                      <div className="card table-card">
+                        <h3>Instrumentos (fluxo obra)</h3>
+                        <div className="table-wrap">
+                          <table>
+                            <thead>
+                              <tr>
+                                <th>Instrumento</th>
+                                <th>Objeto</th>
+                                <th>Status</th>
+                                <th>% obra</th>
+                                <th>Boletins periodo</th>
+                                <th>Repasses periodo</th>
+                                <th>Ultimo boletim</th>
+                                <th>Prestacao contas</th>
+                                <th>Dias vigencia fim</th>
+                                <th>Risco</th>
+                              </tr>
+                            </thead>
+                            <tbody>
+                              {obraReportData.instrumentos.length === 0 ? (
+                                <tr>
+                                  <td colSpan={10}>Nenhum instrumento encontrado.</td>
+                                </tr>
+                              ) : (
+                                obraReportData.instrumentos.map((item) => (
+                                  <tr key={item.id}>
+                                    <td>{item.instrumento}</td>
+                                    <td>{item.objeto}</td>
+                                    <td>{item.status}</td>
+                                    <td>{item.percentual_obra.toFixed(2)}%</td>
+                                    <td>{formatCurrency(item.valor_boletins_periodo)}</td>
+                                    <td>{formatCurrency(item.valor_repasses_periodo)}</td>
+                                    <td>
+                                      {item.ultimo_boletim_data
+                                        ? `${item.ultimo_boletim_data} (${formatCurrency(item.ultimo_boletim_valor ?? 0)})`
+                                        : "-"}
+                                    </td>
+                                    <td>{item.data_prestacao_contas ?? "-"}</td>
+                                    <td>{item.dias_para_vigencia_fim}</td>
+                                    <td>{item.risco}</td>
+                                  </tr>
+                                ))
+                              )}
+                            </tbody>
+                          </table>
+                        </div>
+                      </div>
+                    </>
+                  )}
                 </>
               )}
             </section>

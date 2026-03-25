@@ -141,6 +141,9 @@ type InstrumentSnapshotLike = {
   dataPrestacaoContas: Date | null;
   dataDou: Date | null;
   concedente: string;
+  banco: string | null;
+  agencia: string | null;
+  conta: string | null;
   fluxoTipo: string;
   conveneteId: number | null;
   status: string;
@@ -170,6 +173,9 @@ const snapshotInstrument = (item: InstrumentSnapshotLike | null): AuditSnapshot 
       : null,
     data_dou: item.dataDou ? item.dataDou.toISOString().slice(0, 10) : null,
     concedente: item.concedente,
+    banco: item.banco,
+    agencia: item.agencia,
+    conta: item.conta,
     fluxo_tipo: item.fluxoTipo,
     convenete_id: item.conveneteId,
     status: item.status,
@@ -1142,7 +1148,10 @@ router.put("/:id", authorizeRoles(UserRole.ADMIN, UserRole.GESTOR), async (req, 
       return res.status(422).json({ message: dateRules.message });
     }
 
-    if (parsed.data.status === "EM_EXECUCAO") {
+    const nextStatus = parsed.data.status ?? existing.status;
+    const isEnteringExecution = nextStatus === "EM_EXECUCAO" && existing.status !== "EM_EXECUCAO";
+
+    if (isEnteringExecution) {
       const checklistSummary = await getChecklistSummary(id);
       if (!checklistSummary.pode_iniciar_execucao) {
         return res.status(422).json({

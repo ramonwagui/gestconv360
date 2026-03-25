@@ -69,6 +69,22 @@ npm run web:dev
 - URL frontend: `http://localhost:5173`
 - O Vite faz proxy para a API em `http://localhost:3000`
 
+## Qualidade e regressao
+
+Para validar backend, frontend e a regressao critica de tickets em um comando:
+
+```bash
+npm run check:quality
+```
+
+Para rodar apenas a regressao de tickets:
+
+```bash
+npm run test:tickets-regression
+```
+
+Tambem foi adicionado workflow de CI em `.github/workflows/quality-check.yml` para executar essas verificacoes em push/PR.
+
 ## URL principal
 
 - API: `http://localhost:3000`

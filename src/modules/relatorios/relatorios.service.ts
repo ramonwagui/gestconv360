@@ -1,7 +1,7 @@
-import { InstrumentStatus } from "@prisma/client";
+import { InstrumentFlowType, InstrumentStatus, Prisma } from "@prisma/client";
 
 import { prisma } from "../../lib/prisma";
-import { RepasseReportQueryInput } from "./relatorios.schema";
+import { ObraReportQueryInput, RepasseReportQueryInput } from "./relatorios.schema";
 
 const toDate = (value?: string, endOfDay = false) => {
   if (!value) {
@@ -19,6 +19,11 @@ type InstrumentWithReportData = {
   status: InstrumentStatus;
   valorRepasse: { toString(): string } | number;
   valorJaRepassado: { toString(): string } | number;
+  dataPrestacaoContas: Date | null;
+  concedente: string;
+  banco: string | null;
+  agencia: string | null;
+  conta: string | null;
   orgaoExecutor: string | null;
   repasses: Array<{
     id: number;
@@ -61,6 +66,11 @@ export const buildRepasseReport = async (query: RepasseReportQueryInput) => {
       status: true,
       valorRepasse: true,
       valorJaRepassado: true,
+      dataPrestacaoContas: true,
+      concedente: true,
+      banco: true,
+      agencia: true,
+      conta: true,
       orgaoExecutor: true,
       repasses: {
         where: {
@@ -163,6 +173,11 @@ export const buildRepasseReport = async (query: RepasseReportQueryInput) => {
       proposta: item.proposta,
       instrumento: item.instrumento,
       status: item.status,
+      data_prestacao_contas: item.dataPrestacaoContas ? item.dataPrestacaoContas.toISOString().slice(0, 10) : null,
+      orgao_concedente: item.concedente,
+      banco: item.banco,
+      agencia: item.agencia,
+      conta: item.conta,
       empresa_vencedora: item.orgaoExecutor,
       valor_pactuado: Number(item.valorRepasse),
       valor_ja_repassado: Number(item.valorJaRepassado),
@@ -174,5 +189,198 @@ export const buildRepasseReport = async (query: RepasseReportQueryInput) => {
       ...item,
       empresa_vencedora: instrumentLookup.get(item.instrumento_id)?.orgaoExecutor ?? null
     }))
+  };
+};
+
+type ObraInstrumentRow = {
+  id: number;
+  proposta: string;
+  instrumento: string;
+  objeto: string;
+  status: InstrumentStatus;
+  concedente: string;
+  banco: string | null;
+  agencia: string | null;
+  conta: string | null;
+  dataPrestacaoContas: Date | null;
+  vigenciaFim: Date;
+  valorRepasse: { toString(): string } | number;
+  valorJaRepassado: { toString(): string } | number;
+  convenete: { id: number; nome: string } | null;
+  workProgress: { percentualObra: { toString(): string } | number } | null;
+  measurementBulletins: Array<{
+    dataBoletim: Date;
+    valorMedicao: { toString(): string } | number;
+    percentualObraInformado: { toString(): string } | number | null;
+  }>;
+  repasses: Array<{
+    dataRepasse: Date;
+    valorRepasse: { toString(): string } | number;
+  }>;
+};
+
+const monthKey = (value: Date) => value.toISOString().slice(0, 7);
+
+export const buildObraReport = async (query: ObraReportQueryInput) => {
+  const boletimDateWhere = {
+    gte: toDate(query.data_de),
+    lte: toDate(query.data_ate, true)
+  };
+
+  const where: Prisma.InstrumentProposalWhereInput = {
+    fluxoTipo: InstrumentFlowType.OBRA,
+    ativo: query.ativo
+  };
+
+  if (query.convenete_id !== undefined) {
+    where.conveneteId = query.convenete_id;
+  }
+  if (query.instrumento_id !== undefined) {
+    where.id = query.instrumento_id;
+  }
+  if (query.status) {
+    where.status = query.status;
+  }
+
+  const items = (await prisma.instrumentProposal.findMany({
+    where,
+    select: {
+      id: true,
+      proposta: true,
+      instrumento: true,
+      objeto: true,
+      status: true,
+      concedente: true,
+      banco: true,
+      agencia: true,
+      conta: true,
+      dataPrestacaoContas: true,
+      vigenciaFim: true,
+      valorRepasse: true,
+      valorJaRepassado: true,
+      convenete: {
+        select: {
+          id: true,
+          nome: true
+        }
+      },
+      workProgress: {
+        select: {
+          percentualObra: true
+        }
+      },
+      measurementBulletins: {
+        where: {
+          dataBoletim: boletimDateWhere
+        },
+        orderBy: [{ dataBoletim: "desc" }, { id: "desc" }],
+        select: {
+          dataBoletim: true,
+          valorMedicao: true,
+          percentualObraInformado: true
+        }
+      },
+      repasses: {
+        where: {
+          dataRepasse: {
+            gte: toDate(query.data_de),
+            lte: toDate(query.data_ate, true)
+          }
+        },
+        select: {
+          dataRepasse: true,
+          valorRepasse: true
+        }
+      }
+    },
+    orderBy: [{ vigenciaFim: "asc" }, { instrumento: "asc" }]
+  })) as ObraInstrumentRow[];
+
+  const today = new Date();
+  today.setHours(0, 0, 0, 0);
+
+  const boletinsMensais = new Map<string, number>();
+  const repassesMensais = new Map<string, number>();
+  const statusMap = new Map<InstrumentStatus, number>();
+
+  const instrumentos = items.map((item) => {
+    const percentualObra = item.workProgress ? Number(item.workProgress.percentualObra) : 0;
+    const valorBoletins = item.measurementBulletins.reduce((acc, b) => acc + Number(b.valorMedicao), 0);
+    const valorRepassesPeriodo = item.repasses.reduce((acc, r) => acc + Number(r.valorRepasse), 0);
+
+    item.measurementBulletins.forEach((boletim) => {
+      const key = monthKey(boletim.dataBoletim);
+      boletinsMensais.set(key, (boletinsMensais.get(key) ?? 0) + Number(boletim.valorMedicao));
+    });
+    item.repasses.forEach((repasse) => {
+      const key = monthKey(repasse.dataRepasse);
+      repassesMensais.set(key, (repassesMensais.get(key) ?? 0) + Number(repasse.valorRepasse));
+    });
+
+    statusMap.set(item.status, (statusMap.get(item.status) ?? 0) + 1);
+
+    const diasParaVigenciaFim = Math.floor((item.vigenciaFim.getTime() - today.getTime()) / 86400000);
+    const ultimoBoletim = item.measurementBulletins[0] ?? null;
+
+    let risco: "BAIXO" | "MEDIO" | "ALTO" = "BAIXO";
+    if ((diasParaVigenciaFim <= 60 && percentualObra < 70) || (ultimoBoletim === null && percentualObra < 50)) {
+      risco = "ALTO";
+    } else if (diasParaVigenciaFim <= 120 && percentualObra < 70) {
+      risco = "MEDIO";
+    }
+
+    return {
+      id: item.id,
+      proposta: item.proposta,
+      instrumento: item.instrumento,
+      objeto: item.objeto,
+      status: item.status,
+      convenete_id: item.convenete?.id ?? null,
+      convenete_nome: item.convenete?.nome ?? null,
+      orgao_concedente: item.concedente,
+      banco: item.banco,
+      agencia: item.agencia,
+      conta: item.conta,
+      data_prestacao_contas: item.dataPrestacaoContas ? item.dataPrestacaoContas.toISOString().slice(0, 10) : null,
+      vigencia_fim: item.vigenciaFim.toISOString().slice(0, 10),
+      dias_para_vigencia_fim: diasParaVigenciaFim,
+      percentual_obra: percentualObra,
+      valor_pactuado: Number(item.valorRepasse),
+      valor_ja_repassado: Number(item.valorJaRepassado),
+      valor_boletins_periodo: valorBoletins,
+      valor_repasses_periodo: valorRepassesPeriodo,
+      ultimo_boletim_data: ultimoBoletim ? ultimoBoletim.dataBoletim.toISOString().slice(0, 10) : null,
+      ultimo_boletim_valor: ultimoBoletim ? Number(ultimoBoletim.valorMedicao) : null,
+      risco
+    };
+  });
+
+  const kpis = {
+    obras_monitoradas: instrumentos.length,
+    percentual_medio_obra:
+      instrumentos.length > 0
+        ? instrumentos.reduce((acc, item) => acc + item.percentual_obra, 0) / instrumentos.length
+        : 0,
+    valor_total_boletins_periodo: instrumentos.reduce((acc, item) => acc + item.valor_boletins_periodo, 0),
+    valor_total_repasses_periodo: instrumentos.reduce((acc, item) => acc + item.valor_repasses_periodo, 0),
+    obras_risco_alto: instrumentos.filter((item) => item.risco === "ALTO").length
+  };
+
+  return {
+    filtros: {
+      convenete_id: query.convenete_id ?? null,
+      instrumento_id: query.instrumento_id ?? null,
+      status: query.status ?? null,
+      ativo: query.ativo,
+      data_de: query.data_de ?? null,
+      data_ate: query.data_ate ?? null
+    },
+    kpis,
+    series: {
+      boletins_mensais: Array.from(boletinsMensais.entries()).map(([mes, valor]) => ({ mes, valor })),
+      repasses_mensais: Array.from(repassesMensais.entries()).map(([mes, valor]) => ({ mes, valor })),
+      obras_por_status: Array.from(statusMap.entries()).map(([status, quantidade]) => ({ status, quantidade }))
+    },
+    instrumentos
   };
 };

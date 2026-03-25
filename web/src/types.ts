@@ -52,6 +52,9 @@ export type Instrument = {
   data_prestacao_contas: string | null;
   data_dou: string | null;
   concedente: string;
+  banco: string | null;
+  agencia: string | null;
+  conta: string | null;
   fluxo_tipo: InstrumentFlowType;
   convenete_id: number | null;
   status: InstrumentStatus;
@@ -66,6 +69,7 @@ export type Instrument = {
 export type InstrumentFilters = {
   status: InstrumentStatus | "";
   concedente: string;
+  convenete_id: string;
   ativo: "true" | "false";
   vigencia_de: string;
   vigencia_ate: string;
@@ -84,6 +88,9 @@ export type InstrumentPayload = {
   data_prestacao_contas?: string;
   data_dou?: string;
   concedente: string;
+  banco?: string;
+  agencia?: string;
+  conta?: string;
   fluxo_tipo?: InstrumentFlowType;
   convenete_id?: number;
   status: InstrumentStatus;
@@ -253,6 +260,54 @@ export type DeadlineAlertResponse = {
 
 export type AuditAction = "CREATE" | "UPDATE" | "DEACTIVATE";
 
+export type TicketStatus = "ABERTO" | "EM_ANDAMENTO" | "RESOLVIDO" | "CANCELADO";
+export type TicketSource = "MANUAL" | "EMAIL";
+export type TicketPriority = "BAIXA" | "MEDIA" | "ALTA" | "CRITICA";
+
+export type TicketUserRef = {
+  id: number;
+  nome: string;
+  email: string;
+  role: Role;
+};
+
+export type TicketInstrumentRef = {
+  id: number;
+  proposta: string;
+  instrumento: string;
+  objeto: string;
+  status: InstrumentStatus;
+};
+
+export type TicketComment = {
+  id: number;
+  mensagem: string;
+  created_at: string;
+  updated_at: string;
+  user: TicketUserRef;
+};
+
+export type Ticket = {
+  id: number;
+  codigo: string;
+  titulo: string;
+  descricao: string | null;
+  status: TicketStatus;
+  prioridade: TicketPriority;
+  origem: TicketSource;
+  prazo_alvo: string | null;
+  resolvido_em: string | null;
+  motivo_resolucao: string | null;
+  instrumento_informado: string | null;
+  instrumento_encontrado: boolean;
+  instrumento: TicketInstrumentRef | null;
+  responsavel: TicketUserRef | null;
+  criado_por: TicketUserRef;
+  comentarios: TicketComment[];
+  created_at: string;
+  updated_at: string;
+};
+
 export type AuditLogItem = {
   id: number;
   instrumento_id: number;
@@ -334,6 +389,11 @@ export type RepasseReportInstrument = {
   proposta: string;
   instrumento: string;
   status: InstrumentStatus;
+  data_prestacao_contas: string | null;
+  orgao_concedente: string;
+  banco: string | null;
+  agencia: string | null;
+  conta: string | null;
   empresa_vencedora: string | null;
   valor_pactuado: number;
   valor_ja_repassado: number;
@@ -362,4 +422,67 @@ export type RepasseReportResponse = {
   };
   instrumentos: RepasseReportInstrument[];
   repasses: RepasseReportRepasse[];
+};
+
+export type ObraReportFilters = {
+  convenete_id: number | null;
+  instrumento_id: number | null;
+  status: InstrumentStatus | null;
+  ativo: boolean;
+  data_de: string | null;
+  data_ate: string | null;
+};
+
+export type ObraReportKpis = {
+  obras_monitoradas: number;
+  percentual_medio_obra: number;
+  valor_total_boletins_periodo: number;
+  valor_total_repasses_periodo: number;
+  obras_risco_alto: number;
+};
+
+export type ObraReportMonthlyPoint = {
+  mes: string;
+  valor: number;
+};
+
+export type ObraReportByStatusPoint = {
+  status: InstrumentStatus;
+  quantidade: number;
+};
+
+export type ObraReportInstrument = {
+  id: number;
+  proposta: string;
+  instrumento: string;
+  objeto: string;
+  status: InstrumentStatus;
+  convenete_id: number | null;
+  convenete_nome: string | null;
+  orgao_concedente: string;
+  banco: string | null;
+  agencia: string | null;
+  conta: string | null;
+  data_prestacao_contas: string | null;
+  vigencia_fim: string;
+  dias_para_vigencia_fim: number;
+  percentual_obra: number;
+  valor_pactuado: number;
+  valor_ja_repassado: number;
+  valor_boletins_periodo: number;
+  valor_repasses_periodo: number;
+  ultimo_boletim_data: string | null;
+  ultimo_boletim_valor: number | null;
+  risco: "BAIXO" | "MEDIO" | "ALTO";
+};
+
+export type ObraReportResponse = {
+  filtros: ObraReportFilters;
+  kpis: ObraReportKpis;
+  series: {
+    boletins_mensais: ObraReportMonthlyPoint[];
+    repasses_mensais: ObraReportMonthlyPoint[];
+    obras_por_status: ObraReportByStatusPoint[];
+  };
+  instrumentos: ObraReportInstrument[];
 };

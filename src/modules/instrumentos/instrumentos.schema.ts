@@ -73,6 +73,9 @@ const instrumentBaseSchema = z.object({
   data_prestacao_contas: optionalDateString,
   data_dou: optionalDateString,
   concedente: z.string().min(2).max(120),
+  banco: optionalText,
+  agencia: optionalText,
+  conta: optionalText,
   convenete_id: optionalConveneteId,
   fluxo_tipo: instrumentFlowTypeSchema.default("OBRA"),
   status: instrumentStatusSchema.default("EM_ELABORACAO"),
@@ -109,6 +112,7 @@ export const updateInstrumentSchema = instrumentBaseSchema.partial().extend({
 export const listQuerySchema = z.object({
   status: instrumentStatusSchema.optional(),
   concedente: z.string().optional(),
+  convenete_id: optionalConveneteId,
   ativo: z.coerce.boolean().optional().default(true),
   vigencia_de: dateString.optional(),
   vigencia_ate: dateString.optional()

@@ -11,6 +11,7 @@ import { convenetesRouter } from "./modules/convenetes/convenetes.routes";
 import { instrumentosRouter } from "./modules/instrumentos/instrumentos.routes";
 import { instrumentosPublicRouter } from "./modules/instrumentos/instrumentos.public.routes";
 import { relatoriosRouter } from "./modules/relatorios/relatorios.routes";
+import { ticketsRouter } from "./modules/tickets/tickets.routes";
 import { usuariosRouter } from "./modules/usuarios/usuarios.routes";
 
 export const app = express();
@@ -37,6 +38,7 @@ app.get("/", (_req, res) => {
       <li><code>/api/v1/instrumentos</code></li>
       <li><code>/api/v1/convenetes</code></li>
       <li><code>/api/v1/usuarios</code></li>
+      <li><code>/api/v1/tickets</code></li>
     </ul>
   </body>
 </html>`);
@@ -57,6 +59,7 @@ app.use("/api/v1/auditoria", auditoriaRouter);
 app.use("/api/v1/convenetes", convenetesRouter);
 app.use("/api/v1/relatorios", relatoriosRouter);
 app.use("/api/v1/usuarios", usuariosRouter);
+app.use("/api/v1/tickets", ticketsRouter);
 
 const errorHandler: ErrorRequestHandler = (error, req, res, _next) => {
   // eslint-disable-next-line no-console

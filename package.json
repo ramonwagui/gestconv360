@@ -6,9 +6,13 @@
   "scripts": {
     "dev": "tsx watch src/server.ts",
     "build": "tsc -p tsconfig.json",
+    "check:quality": "npm run build && npm run web:build && npm run test:tickets-regression",
     "start": "node dist/server.js",
     "web:dev": "npm --prefix web run dev",
     "web:build": "npm --prefix web run build",
+    "seed:demo": "tsx src/scripts/seed-demo-instrumentos.ts",
+    "test:tickets-regression": "tsx src/scripts/tickets-regression-check.ts",
+    "dev:restart": "tsx src/scripts/run-and-restart-dev-servers.ts",
     "prisma:generate": "prisma generate",
     "prisma:migrate": "prisma migrate dev --name init",
     "prisma:studio": "prisma studio"
