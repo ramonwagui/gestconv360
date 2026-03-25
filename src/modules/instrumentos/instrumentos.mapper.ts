@@ -1,5 +1,17 @@
 import { InstrumentProposal } from "@prisma/client";
 
+type InstrumentRepasseLike = {
+  id: number;
+  dataRepasse: Date;
+  valorRepasse: { toString(): string } | number;
+  createdAt: Date;
+  updatedAt: Date;
+};
+
+type InstrumentWithRepassesLike = InstrumentProposal & {
+  repasses?: InstrumentRepasseLike[];
+};
+
 const toDateOnly = (value: Date | null): string | null => {
   if (!value) {
     return null;
@@ -7,13 +19,28 @@ const toDateOnly = (value: Date | null): string | null => {
   return value.toISOString().slice(0, 10);
 };
 
-export const mapInstrument = (item: InstrumentProposal) => ({
+export const mapInstrument = (item: InstrumentWithRepassesLike) => {
+  const repasses = (item.repasses ?? []).map((repasse) => ({
+    id: repasse.id,
+    data_repasse: repasse.dataRepasse.toISOString().slice(0, 10),
+    valor_repasse: Number(repasse.valorRepasse),
+    created_at: repasse.createdAt.toISOString(),
+    updated_at: repasse.updatedAt.toISOString()
+  }));
+
+  const valorJaRepassado = repasses.reduce((acc, repasse) => acc + repasse.valor_repasse, 0);
+  const percentualRepassado = Number(item.valorRepasse) > 0 ? Math.min(100, (valorJaRepassado / Number(item.valorRepasse)) * 100) : 0;
+
+  return {
   id: item.id,
   proposta: item.proposta,
   instrumento: item.instrumento,
   objeto: item.objeto,
   valor_repasse: Number(item.valorRepasse),
   valor_contrapartida: Number(item.valorContrapartida),
+  valor_ja_repassado: valorJaRepassado,
+  percentual_repassado: percentualRepassado,
+  repasses,
   valor_total: Number(item.valorRepasse) + Number(item.valorContrapartida),
   data_cadastro: toDateOnly(item.dataCadastro),
   data_assinatura: toDateOnly(item.dataAssinatura),
@@ -31,4 +58,5 @@ export const mapInstrument = (item: InstrumentProposal) => ({
   ativo: item.ativo,
   created_at: item.createdAt.toISOString(),
   updated_at: item.updatedAt.toISOString()
-});
+  };
+};

@@ -9,6 +9,8 @@ import { authRouter } from "./modules/auth/auth.routes";
 import { auditoriaRouter } from "./modules/auditoria/auditoria.routes";
 import { convenetesRouter } from "./modules/convenetes/convenetes.routes";
 import { instrumentosRouter } from "./modules/instrumentos/instrumentos.routes";
+import { instrumentosPublicRouter } from "./modules/instrumentos/instrumentos.public.routes";
+import { relatoriosRouter } from "./modules/relatorios/relatorios.routes";
 import { usuariosRouter } from "./modules/usuarios/usuarios.routes";
 
 export const app = express();
@@ -41,13 +43,19 @@ app.get("/", (_req, res) => {
 });
 
 app.get("/health", (_req, res) => {
-  res.json({ status: "ok" });
+  res.json({
+    status: "ok",
+    version: process.env.npm_package_version ?? "unknown",
+    timestamp: new Date().toISOString()
+  });
 });
 
 app.use("/api/v1/auth", authRouter);
+app.use("/api/v1/public", instrumentosPublicRouter);
 app.use("/api/v1/instrumentos", instrumentosRouter);
 app.use("/api/v1/auditoria", auditoriaRouter);
 app.use("/api/v1/convenetes", convenetesRouter);
+app.use("/api/v1/relatorios", relatoriosRouter);
 app.use("/api/v1/usuarios", usuariosRouter);
 
 const errorHandler: ErrorRequestHandler = (error, req, res, _next) => {

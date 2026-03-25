@@ -1,7 +1,7 @@
 import { AuditAction, Prisma, UserRole } from "@prisma/client";
 import { randomUUID } from "crypto";
 import { promises as fs } from "fs";
-import { Router } from "express";
+import { Request, Router } from "express";
 import multer from "multer";
 import path from "path";
 
@@ -10,6 +10,8 @@ import { authenticate, authorizeRoles } from "../../middlewares/auth";
 import { mapInstrument } from "./instrumentos.mapper";
 import {
   alertQuerySchema,
+  checklistExternalFileIdParamSchema,
+  checklistExternalLinkCreateSchema,
   checklistItemCreateSchema,
   checklistItemIdParamSchema,
   stageParamSchema,
@@ -21,6 +23,8 @@ import {
   checklistItemUpdateSchema,
   createInstrumentSchema,
   listQuerySchema,
+  repasseCreateSchema,
+  repasseIdParamSchema,
   workProgressUpdateSchema,
   updateInstrumentSchema
 } from "./instrumentos.schema";
@@ -33,19 +37,26 @@ import {
   createMeasurementBulletin,
   createInstrument,
   createChecklistItem,
+  createChecklistExternalLink,
+  deactivateChecklistExternalLink,
   deleteChecklistItem,
   deleteMeasurementBulletin,
+  getChecklistExternalFileById,
   getChecklistItemById,
   getChecklistSummary,
   deactivateInstrument,
+  deleteRepasse,
   getDeadlineAlerts,
   getInstrumentById,
   getStageFollowUpFileById,
   getWorkProgress,
+  listRepasses,
+  listChecklistExternalFiles,
   listStageFollowUps,
   listChecklistItems,
   listInstruments,
   syncAllExistingWorkflowChecklists,
+  createRepasse,
   createStageFollowUp,
   clearChecklistItemUpload,
   updateChecklistItem,
@@ -117,7 +128,29 @@ const validateDateRules = (payload: {
   return { ok: true };
 };
 
-const snapshotInstrument = (item: Awaited<ReturnType<typeof getInstrumentById>>): AuditSnapshot => {
+type InstrumentSnapshotLike = {
+  proposta: string;
+  instrumento: string;
+  objeto: string;
+  valorRepasse: { toString(): string } | number;
+  valorContrapartida: { toString(): string } | number;
+  dataCadastro: Date;
+  dataAssinatura: Date | null;
+  vigenciaInicio: Date;
+  vigenciaFim: Date;
+  dataPrestacaoContas: Date | null;
+  dataDou: Date | null;
+  concedente: string;
+  fluxoTipo: string;
+  conveneteId: number | null;
+  status: string;
+  responsavel: string | null;
+  orgaoExecutor: string | null;
+  observacoes: string | null;
+  ativo: boolean;
+};
+
+const snapshotInstrument = (item: InstrumentSnapshotLike | null): AuditSnapshot => {
   if (!item) {
     return {};
   }
@@ -147,15 +180,47 @@ const snapshotInstrument = (item: Awaited<ReturnType<typeof getInstrumentById>>)
   };
 };
 
-const mapChecklistItem = (instrumentId: number, item: Awaited<ReturnType<typeof getChecklistItemById>>) => {
+const mapChecklistItem = (instrumentId: number, item: any) => {
   if (!item) {
     return null;
   }
+
+  const activeExternalLink = (item.externalLinks ?? []).find((link: any) => link.ativo) ?? null;
+  const externalFiles = (item.externalLinks ?? [])
+    .flatMap((link: any) =>
+      (link.files ?? []).map((file: any) => ({
+        ...file,
+        linkAtivo: link.ativo,
+        linkExpiraEm: link.expiraEm,
+        linkCreatedAt: link.createdAt
+      }))
+    )
+    .sort(
+      (a: any, b: any) =>
+        new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime() ||
+        new Date(b.linkCreatedAt).getTime() - new Date(a.linkCreatedAt).getTime()
+    );
+
+  const statusLabel =
+    item.etapa === "PROPOSTA"
+      ? item.status === "ACEITO" || item.status === "CONCLUIDO"
+        ? "Aprovado"
+        : item.status === "EM_ELABORACAO"
+          ? "Ajustar"
+          : "Em analise"
+      : item.status === "NAO_INICIADO"
+        ? "Em analise"
+        : item.status === "EM_ELABORACAO"
+          ? "Em elaboracao"
+          : item.status === "CONCLUIDO"
+            ? "Concluido"
+            : "Aceito";
 
   return {
     id: item.id,
     etapa: item.etapa,
     status: item.status,
+    status_label: statusLabel,
     nome_documento: item.nomeDocumento,
     obrigatorio: item.obrigatorio,
     concluido: item.concluido,
@@ -171,9 +236,34 @@ const mapChecklistItem = (instrumentId: number, item: Awaited<ReturnType<typeof 
             download_path: `/api/v1/instrumentos/${instrumentId}/checklist/${item.id}/download`
           }
         : null,
+    solicitacao_externa: activeExternalLink
+      ? {
+          token: activeExternalLink.token,
+          ativo: activeExternalLink.ativo,
+          expira_em: activeExternalLink.expiraEm.toISOString(),
+          link_publico: `/api/v1/public/checklist-links/${activeExternalLink.token}`,
+          arquivos_recebidos: externalFiles.length
+        }
+      : null,
+    anexos_externos: externalFiles.map((file: any) => ({
+      id: file.id,
+      nome_remetente: file.nomeRemetente,
+      nome_original: file.arquivoNomeOriginal,
+      mime_type: file.arquivoMimeType,
+      tamanho: file.arquivoTamanho,
+      created_at: file.createdAt.toISOString(),
+      origem_link_ativo: Boolean(file.linkAtivo),
+      origem_link_expira_em: file.linkExpiraEm ? new Date(file.linkExpiraEm).toISOString() : null,
+      download_path: `/api/v1/instrumentos/${instrumentId}/checklist/${item.id}/external-files/${file.id}/download`
+    })),
     created_at: item.createdAt.toISOString(),
     updated_at: item.updatedAt.toISOString()
   };
+};
+
+const buildAbsoluteUrl = (req: Request, pathValue: string) => {
+  const host = req.get("host") ?? `localhost:${req.socket.localPort ?? 3000}`;
+  return `${req.protocol}://${host}${pathValue}`;
 };
 
 const mapStageFollowUp = (
@@ -192,9 +282,13 @@ const mapStageFollowUp = (
     user: {
       id: item.user?.id ?? item.userId ?? null,
       nome: item.user?.nome ?? null,
-      email: item.user?.email ?? item.userEmail
+      email: item.user?.email ?? item.userEmail,
+      avatar_url:
+        item.user?.avatarPath && item.user?.updatedAt
+          ? `/api/v1/usuarios/avatar/${item.user.id}?v=${item.user.updatedAt.getTime()}`
+          : null
     },
-    arquivos: item.files.map((file) => ({
+    arquivos: item.files.map((file: any) => ({
       id: file.id,
       nome_original: file.arquivoNomeOriginal,
       mime_type: file.arquivoMimeType,
@@ -307,6 +401,93 @@ router.get("/:id", authorizeRoles(UserRole.ADMIN, UserRole.GESTOR, UserRole.CONS
   }
 });
 
+router.get("/:id/repasses", authorizeRoles(UserRole.ADMIN, UserRole.GESTOR, UserRole.CONSULTA), async (req, res) => {
+  const id = Number(req.params.id);
+  if (Number.isNaN(id)) {
+    return res.status(400).json({ message: "ID invalido." });
+  }
+
+  const existing = await getInstrumentById(id);
+  if (!existing) {
+    return res.status(404).json({ message: "Registro nao encontrado." });
+  }
+
+  const repasses = await listRepasses(id);
+  return res.json({
+    itens: repasses.map((repasse: any) => ({
+      id: repasse.id,
+      data_repasse: repasse.dataRepasse.toISOString().slice(0, 10),
+      valor_repasse: Number(repasse.valorRepasse),
+      created_at: repasse.createdAt.toISOString(),
+      updated_at: repasse.updatedAt.toISOString()
+    }))
+  });
+});
+
+router.post("/:id/repasses", authorizeRoles(UserRole.ADMIN, UserRole.GESTOR), async (req, res) => {
+  const id = Number(req.params.id);
+  if (Number.isNaN(id)) {
+    return res.status(400).json({ message: "ID invalido." });
+  }
+
+  const existing = await getInstrumentById(id);
+  if (!existing) {
+    return res.status(404).json({ message: "Registro nao encontrado." });
+  }
+
+  const parsed = repasseCreateSchema.safeParse(req.body);
+  if (!parsed.success) {
+    return res.status(422).json({
+      message: "Payload invalido",
+      issues: parsed.error.flatten()
+    });
+  }
+
+  try {
+    await createRepasse(id, parsed.data);
+    const updated = await getInstrumentById(id);
+    if (!updated) {
+      return res.status(404).json({ message: "Registro nao encontrado." });
+    }
+    return res.status(201).json(mapInstrument(updated));
+  } catch {
+    return res.status(500).json({ message: "Erro interno ao cadastrar repasse." });
+  }
+});
+
+router.delete("/:id/repasses/:repasseId", authorizeRoles(UserRole.ADMIN, UserRole.GESTOR), async (req, res) => {
+  const id = Number(req.params.id);
+  if (Number.isNaN(id)) {
+    return res.status(400).json({ message: "ID invalido." });
+  }
+
+  const repasseParam = repasseIdParamSchema.safeParse(req.params);
+  if (!repasseParam.success) {
+    return res.status(400).json({ message: "Repasse invalido." });
+  }
+
+  const existing = await getInstrumentById(id);
+  if (!existing) {
+    return res.status(404).json({ message: "Registro nao encontrado." });
+  }
+
+  try {
+    const deleted = await deleteRepasse(id, repasseParam.data.repasseId);
+    if (!deleted) {
+      return res.status(404).json({ message: "Repasse nao encontrado." });
+    }
+
+    const updated = await getInstrumentById(id);
+    if (!updated) {
+      return res.status(404).json({ message: "Registro nao encontrado." });
+    }
+
+    return res.json(mapInstrument(updated));
+  } catch {
+    return res.status(500).json({ message: "Erro interno ao remover repasse." });
+  }
+});
+
 router.get(
   "/:id/checklist",
   authorizeRoles(UserRole.ADMIN, UserRole.GESTOR, UserRole.CONSULTA),
@@ -326,6 +507,156 @@ router.get(
       resumo: summary,
       itens: items.map((item: Awaited<ReturnType<typeof getChecklistItemById>>) => mapChecklistItem(id, item))
     });
+  }
+);
+
+router.post(
+  "/:id/checklist/:itemId/external-link",
+  authorizeRoles(UserRole.ADMIN, UserRole.GESTOR),
+  async (req, res) => {
+    const id = Number(req.params.id);
+    if (Number.isNaN(id)) {
+      return res.status(400).json({ message: "ID invalido." });
+    }
+
+    const itemParam = checklistItemIdParamSchema.safeParse(req.params);
+    if (!itemParam.success) {
+      return res.status(400).json({ message: "Item invalido." });
+    }
+
+    const parsedBody = checklistExternalLinkCreateSchema.safeParse(req.body ?? {});
+    if (!parsedBody.success) {
+      return res.status(422).json({
+        message: "Payload invalido",
+        issues: parsedBody.error.flatten()
+      });
+    }
+
+    if (!req.user) {
+      return res.status(401).json({ message: "Usuario nao autenticado." });
+    }
+
+    try {
+      const created = await createChecklistExternalLink(id, itemParam.data.itemId, {
+        token: randomUUID(),
+        validadeDias: parsedBody.data.validade_dias,
+        createdByUserId: req.user.id,
+        createdByEmail: req.user.email
+      });
+
+      const publicPath = `/api/v1/public/checklist-links/${created.token}`;
+      return res.status(201).json({
+        token: created.token,
+        ativo: created.ativo,
+        expira_em: created.expiraEm.toISOString(),
+        validade_dias: parsedBody.data.validade_dias,
+        link_publico: buildAbsoluteUrl(req, publicPath)
+      });
+    } catch (error) {
+      if (error instanceof Error && error.message === "CHECKLIST_ITEM_NOT_FOUND") {
+        return res.status(404).json({ message: "Item de checklist nao encontrado." });
+      }
+      return res.status(500).json({ message: "Erro interno ao gerar link externo." });
+    }
+  }
+);
+
+router.delete(
+  "/:id/checklist/:itemId/external-link",
+  authorizeRoles(UserRole.ADMIN, UserRole.GESTOR),
+  async (req, res) => {
+    const id = Number(req.params.id);
+    if (Number.isNaN(id)) {
+      return res.status(400).json({ message: "ID invalido." });
+    }
+
+    const itemParam = checklistItemIdParamSchema.safeParse(req.params);
+    if (!itemParam.success) {
+      return res.status(400).json({ message: "Item invalido." });
+    }
+
+    try {
+      const result = await deactivateChecklistExternalLink(id, itemParam.data.itemId);
+      return res.json({
+        message: result.desativados > 0 ? "Link externo desativado." : "Nenhum link externo ativo para desativar.",
+        desativados: result.desativados
+      });
+    } catch (error) {
+      if (error instanceof Error && error.message === "CHECKLIST_ITEM_NOT_FOUND") {
+        return res.status(404).json({ message: "Item de checklist nao encontrado." });
+      }
+      return res.status(500).json({ message: "Erro interno ao desativar link externo." });
+    }
+  }
+);
+
+router.get(
+  "/:id/checklist/:itemId/external-files",
+  authorizeRoles(UserRole.ADMIN, UserRole.GESTOR, UserRole.CONSULTA),
+  async (req, res) => {
+    const id = Number(req.params.id);
+    if (Number.isNaN(id)) {
+      return res.status(400).json({ message: "ID invalido." });
+    }
+
+    const itemParam = checklistItemIdParamSchema.safeParse(req.params);
+    if (!itemParam.success) {
+      return res.status(400).json({ message: "Item invalido." });
+    }
+
+    const item = await getChecklistItemById(id, itemParam.data.itemId);
+    if (!item) {
+      return res.status(404).json({ message: "Item de checklist nao encontrado." });
+    }
+
+    const files = await listChecklistExternalFiles(id, itemParam.data.itemId);
+    return res.json({
+      itens: files.map((file: any) => ({
+        id: file.id,
+        nome_remetente: file.nomeRemetente,
+        nome_original: file.arquivoNomeOriginal,
+        mime_type: file.arquivoMimeType,
+        tamanho: file.arquivoTamanho,
+        created_at: file.createdAt.toISOString(),
+        link_token: file.externalLink.token,
+        link_ativo: file.externalLink.ativo,
+        link_expira_em: file.externalLink.expiraEm.toISOString(),
+        download_path: `/api/v1/instrumentos/${id}/checklist/${itemParam.data.itemId}/external-files/${file.id}/download`
+      }))
+    });
+  }
+);
+
+router.get(
+  "/:id/checklist/:itemId/external-files/:fileId/download",
+  authorizeRoles(UserRole.ADMIN, UserRole.GESTOR, UserRole.CONSULTA),
+  async (req, res) => {
+    const id = Number(req.params.id);
+    if (Number.isNaN(id)) {
+      return res.status(400).json({ message: "ID invalido." });
+    }
+
+    const itemParam = checklistItemIdParamSchema.safeParse(req.params);
+    if (!itemParam.success) {
+      return res.status(400).json({ message: "Item invalido." });
+    }
+
+    const fileParam = checklistExternalFileIdParamSchema.safeParse(req.params);
+    if (!fileParam.success) {
+      return res.status(400).json({ message: "Arquivo invalido." });
+    }
+
+    const file = await getChecklistExternalFileById(id, itemParam.data.itemId, fileParam.data.fileId);
+    if (!file) {
+      return res.status(404).json({ message: "Arquivo nao encontrado." });
+    }
+
+    try {
+      await fs.access(file.arquivoPath);
+      return res.download(file.arquivoPath, file.arquivoNomeOriginal);
+    } catch {
+      return res.status(404).json({ message: "Arquivo nao encontrado." });
+    }
   }
 );
 
@@ -351,8 +682,8 @@ router.get(
     const items = await listStageFollowUps(id, stageParam.data.stage);
     return res.json({
       itens: items
-        .map((item) => mapStageFollowUp(id, stageParam.data.stage, item))
-        .filter((item) => item !== null)
+        .map((item: any) => mapStageFollowUp(id, stageParam.data.stage, item))
+        .filter((item: any) => item !== null)
     });
   }
 );

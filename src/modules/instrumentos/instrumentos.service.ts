@@ -7,9 +7,27 @@ import {
   CreateInstrumentInput,
   ListQueryInput,
   MeasurementCreateInput,
+  RepasseCreateInput,
   UpdateInstrumentInput,
   WorkProgressUpdateInput
 } from "./instrumentos.schema";
+
+const checklistExternalLinkInclude = {
+  externalLinks: {
+    orderBy: [{ createdAt: "desc" as const }, { id: "desc" as const }],
+    include: {
+      files: {
+        orderBy: [{ createdAt: "desc" as const }, { id: "desc" as const }]
+      }
+    }
+  }
+};
+
+const instrumentRepasseInclude = {
+  repasses: {
+    orderBy: [{ dataRepasse: "desc" as const }, { id: "desc" as const }]
+  }
+};
 
 const toDate = (value?: string): Date | undefined => {
   if (!value) {
@@ -19,12 +37,25 @@ const toDate = (value?: string): Date | undefined => {
 };
 
 const STAGE_ORDER: InstrumentWorkflowStage[] = [
+  InstrumentWorkflowStage.PROPOSTA,
   InstrumentWorkflowStage.REQUISITOS_CELEBRACAO,
   InstrumentWorkflowStage.PROJETO_BASICO_TERMO_REFERENCIA,
   InstrumentWorkflowStage.PROCESSO_EXECUCAO_LICITACAO,
   InstrumentWorkflowStage.VERIFICACAO_PROCESSO_LICITATORIO,
   InstrumentWorkflowStage.INSTRUMENTOS_CONTRATUAIS,
   InstrumentWorkflowStage.ACOMPANHAMENTO_OBRA
+];
+
+const PROPOSTA_DEFAULT_ITEMS: Array<{ nome: string; obrigatorio: boolean }> = [
+  { nome: "Caracterizacao dos interesses reciprocos", obrigatorio: true },
+  { nome: "Publico alvo", obrigatorio: true },
+  { nome: "Problema a ser resolvido", obrigatorio: true },
+  { nome: "Resultados esperados", obrigatorio: true },
+  { nome: "Relacao entre a proposta e os objetivos e diretrizes do programa", obrigatorio: true },
+  { nome: "Objeto do instrumento", obrigatorio: true },
+  { nome: "Crono fisico financeiro", obrigatorio: true },
+  { nome: "Crono desembolso", obrigatorio: true },
+  { nome: "Plano de aplicacao detalhado", obrigatorio: true }
 ];
 
 type FlowDefinition = {
@@ -36,6 +67,7 @@ const FLOW_DEFINITIONS: Record<InstrumentFlowType, FlowDefinition> = {
   [InstrumentFlowType.OBRA]: {
     stages: STAGE_ORDER,
     defaultStageItems: {
+      [InstrumentWorkflowStage.PROPOSTA]: PROPOSTA_DEFAULT_ITEMS,
       [InstrumentWorkflowStage.REQUISITOS_CELEBRACAO]: [{ nome: "Documentacao", obrigatorio: true }],
       [InstrumentWorkflowStage.PROJETO_BASICO_TERMO_REFERENCIA]: [
         { nome: "Declaracoes", obrigatorio: true },
@@ -62,6 +94,7 @@ const FLOW_DEFINITIONS: Record<InstrumentFlowType, FlowDefinition> = {
   [InstrumentFlowType.AQUISICAO_EQUIPAMENTOS]: {
     stages: STAGE_ORDER,
     defaultStageItems: {
+      [InstrumentWorkflowStage.PROPOSTA]: PROPOSTA_DEFAULT_ITEMS,
       [InstrumentWorkflowStage.REQUISITOS_CELEBRACAO]: [{ nome: "Documentacao", obrigatorio: true }],
       [InstrumentWorkflowStage.PROJETO_BASICO_TERMO_REFERENCIA]: [
         { nome: "Termo de referencia", obrigatorio: true },
@@ -84,6 +117,7 @@ const FLOW_DEFINITIONS: Record<InstrumentFlowType, FlowDefinition> = {
   [InstrumentFlowType.EVENTOS]: {
     stages: STAGE_ORDER,
     defaultStageItems: {
+      [InstrumentWorkflowStage.PROPOSTA]: PROPOSTA_DEFAULT_ITEMS,
       [InstrumentWorkflowStage.REQUISITOS_CELEBRACAO]: [{ nome: "Documentacao", obrigatorio: true }],
       [InstrumentWorkflowStage.PROJETO_BASICO_TERMO_REFERENCIA]: [
         { nome: "Plano de trabalho do evento", obrigatorio: true },
@@ -402,12 +436,13 @@ export const listInstruments = async (query: ListQueryInput) => {
 
   return prisma.instrumentProposal.findMany({
     where,
+    include: instrumentRepasseInclude,
     orderBy: [{ vigenciaFim: "asc" }, { createdAt: "desc" }]
   });
 };
 
 export const getInstrumentById = async (id: number) => {
-  return prisma.instrumentProposal.findUnique({ where: { id } });
+  return prisma.instrumentProposal.findUnique({ where: { id }, include: instrumentRepasseInclude });
 };
 
 export const updateInstrument = async (id: number, input: UpdateInstrumentInput) => {
@@ -435,14 +470,54 @@ export const updateInstrument = async (id: number, input: UpdateInstrumentInput)
 
   return prisma.instrumentProposal.update({
     where: { id },
-    data
+    data,
+    include: instrumentRepasseInclude
   });
 };
 
 export const deactivateInstrument = async (id: number) => {
   return prisma.instrumentProposal.update({
     where: { id },
-    data: { ativo: false }
+    data: { ativo: false },
+    include: instrumentRepasseInclude
+  });
+};
+
+export const listRepasses = async (instrumentId: number) => {
+  return prisma.instrumentRepasse.findMany({
+    where: { instrumentId },
+    orderBy: [{ dataRepasse: "desc" }, { id: "desc" }]
+  });
+};
+
+export const createRepasse = async (instrumentId: number, input: RepasseCreateInput) => {
+  return prisma.$transaction(async (tx) => {
+    const created = await tx.instrumentRepasse.create({
+      data: {
+        instrumentId,
+        dataRepasse: new Date(`${input.data_repasse}T00:00:00.000Z`),
+        valorRepasse: input.valor_repasse
+      }
+    });
+
+    await recalculateInstrumentRepassado(tx, instrumentId);
+    return created;
+  });
+};
+
+export const deleteRepasse = async (instrumentId: number, repasseId: number) => {
+  return prisma.$transaction(async (tx) => {
+    const existing = await tx.instrumentRepasse.findFirst({
+      where: { id: repasseId, instrumentId }
+    });
+
+    if (!existing) {
+      return null;
+    }
+
+    await tx.instrumentRepasse.delete({ where: { id: repasseId } });
+    await recalculateInstrumentRepassado(tx, instrumentId);
+    return existing;
   });
 };
 
@@ -496,8 +571,24 @@ export const listChecklistItems = async (instrumentId: number) => {
   await ensureWorkflowChecklist(instrumentId);
   return prisma.instrumentChecklistItem.findMany({
     where: { instrumentId },
+    include: checklistExternalLinkInclude,
     orderBy: [{ etapa: "asc" }, { ordem: "asc" }, { createdAt: "asc" }]
   });
+};
+
+const recalculateInstrumentRepassado = async (tx: Prisma.TransactionClient, instrumentId: number) => {
+  const aggregate = await tx.instrumentRepasse.aggregate({
+    where: { instrumentId },
+    _sum: { valorRepasse: true }
+  });
+
+  const total = Number(aggregate._sum.valorRepasse ?? 0);
+  await tx.instrumentProposal.update({
+    where: { id: instrumentId },
+    data: { valorJaRepassado: total }
+  });
+
+  return total;
 };
 
 export const createChecklistItem = async (instrumentId: number, input: ChecklistItemCreateInput) => {
@@ -587,6 +678,247 @@ export const getChecklistItemById = async (instrumentId: number, itemId: number)
     where: {
       id: itemId,
       instrumentId
+    },
+    include: checklistExternalLinkInclude
+  });
+};
+
+export const createChecklistExternalLink = async (
+  instrumentId: number,
+  itemId: number,
+  payload: {
+    token: string;
+    validadeDias: number;
+    createdByUserId?: number;
+    createdByEmail: string;
+  }
+) => {
+  const item = await prisma.instrumentChecklistItem.findFirst({
+    where: {
+      id: itemId,
+      instrumentId
+    }
+  });
+  if (!item) {
+    throw new Error("CHECKLIST_ITEM_NOT_FOUND");
+  }
+
+  const expiraEm = new Date(Date.now() + payload.validadeDias * 24 * 60 * 60 * 1000);
+
+  await prisma.instrumentChecklistExternalLink.updateMany({
+    where: {
+      checklistItemId: itemId,
+      ativo: true
+    },
+    data: {
+      ativo: false
+    }
+  });
+
+  return prisma.instrumentChecklistExternalLink.create({
+    data: {
+      checklistItemId: itemId,
+      token: payload.token,
+      expiraEm,
+      ativo: true,
+      createdByUserId: payload.createdByUserId,
+      createdByEmail: payload.createdByEmail
+    },
+    include: {
+      files: {
+        orderBy: [{ createdAt: "desc" }, { id: "desc" }]
+      }
+    }
+  });
+};
+
+export const deactivateChecklistExternalLink = async (instrumentId: number, itemId: number) => {
+  const item = await prisma.instrumentChecklistItem.findFirst({
+    where: {
+      id: itemId,
+      instrumentId
+    }
+  });
+
+  if (!item) {
+    throw new Error("CHECKLIST_ITEM_NOT_FOUND");
+  }
+
+  const result = await prisma.instrumentChecklistExternalLink.updateMany({
+    where: {
+      checklistItemId: itemId,
+      ativo: true
+    },
+    data: {
+      ativo: false
+    }
+  });
+
+  return {
+    desativados: result.count
+  };
+};
+
+export const getActiveChecklistExternalLinkByToken = async (token: string) => {
+  const link = await prisma.instrumentChecklistExternalLink.findFirst({
+    where: {
+      token,
+      ativo: true
+    },
+    include: {
+      checklistItem: {
+        include: {
+          instrument: {
+            select: {
+              id: true,
+              proposta: true,
+              instrumento: true,
+              concedente: true
+            }
+          }
+        }
+      },
+      files: {
+        orderBy: [{ createdAt: "desc" }, { id: "desc" }]
+      }
+    }
+  });
+
+  if (!link) {
+    return null;
+  }
+
+  if (link.expiraEm.getTime() < Date.now()) {
+    await prisma.instrumentChecklistExternalLink.update({
+      where: { id: link.id },
+      data: { ativo: false }
+    });
+    return null;
+  }
+
+  return link;
+};
+
+export const getChecklistExternalLinkByToken = async (token: string) => {
+  return prisma.instrumentChecklistExternalLink.findFirst({
+    where: {
+      token
+    },
+    include: {
+      checklistItem: {
+        include: {
+          instrument: {
+            select: {
+              proposta: true,
+              instrumento: true
+            }
+          }
+        }
+      }
+    }
+  });
+};
+
+export const saveChecklistExternalFilesByToken = async (
+  token: string,
+  payload: {
+    nomeRemetente: string;
+    files: Array<{
+      arquivoPath: string;
+      arquivoNomeOriginal: string;
+      arquivoMimeType?: string;
+      arquivoTamanho?: number;
+    }>;
+  }
+) => {
+  const link = await getActiveChecklistExternalLinkByToken(token);
+  if (!link) {
+    throw new Error("CHECKLIST_EXTERNAL_LINK_NOT_FOUND");
+  }
+
+  if (payload.files.length === 0) {
+    throw new Error("CHECKLIST_EXTERNAL_FILES_REQUIRED");
+  }
+
+  const totalArquivosNoLink = await prisma.$transaction(async (tx) => {
+    await tx.instrumentChecklistExternalFile.createMany({
+      data: payload.files.map((file) => ({
+        externalLinkId: link.id,
+        nomeRemetente: payload.nomeRemetente,
+        arquivoPath: file.arquivoPath,
+        arquivoNomeOriginal: file.arquivoNomeOriginal,
+        arquivoMimeType: file.arquivoMimeType,
+        arquivoTamanho: file.arquivoTamanho
+      }))
+    });
+
+    await tx.instrumentChecklistItem.update({
+      where: { id: link.checklistItemId },
+      data: {
+        status: ChecklistItemStatus.CONCLUIDO,
+        concluido: true
+      }
+    });
+
+    await tx.instrumentChecklistExternalLink.update({
+      where: { id: link.id },
+      data: { ativo: false }
+    });
+
+    return tx.instrumentChecklistExternalFile.count({
+      where: { externalLinkId: link.id }
+    });
+  });
+
+  return {
+    totalArquivosNoLink
+  };
+};
+
+export const listChecklistExternalFiles = async (instrumentId: number, itemId: number) => {
+  return prisma.instrumentChecklistExternalFile.findMany({
+    where: {
+      externalLink: {
+        checklistItemId: itemId,
+        checklistItem: {
+          instrumentId
+        }
+      }
+    },
+    include: {
+      externalLink: {
+        select: {
+          id: true,
+          token: true,
+          ativo: true,
+          expiraEm: true,
+          createdAt: true
+        }
+      }
+    },
+    orderBy: [{ createdAt: "desc" }, { id: "desc" }]
+  });
+};
+
+export const getChecklistExternalFileById = async (instrumentId: number, itemId: number, fileId: number) => {
+  return prisma.instrumentChecklistExternalFile.findFirst({
+    where: {
+      id: fileId,
+      externalLink: {
+        checklistItemId: itemId,
+        checklistItem: {
+          instrumentId
+        }
+      }
+    },
+    include: {
+      externalLink: {
+        select: {
+          id: true,
+          token: true,
+          checklistItemId: true
+        }
+      }
     }
   });
 };
@@ -651,7 +983,9 @@ export const listStageFollowUps = async (instrumentId: number, stage: Instrument
         select: {
           id: true,
           nome: true,
-          email: true
+          email: true,
+          avatarPath: true,
+          updatedAt: true
         }
       },
       files: {
@@ -712,7 +1046,9 @@ export const createStageFollowUp = async (
           select: {
             id: true,
             nome: true,
-            email: true
+            email: true,
+            avatarPath: true,
+            updatedAt: true
           }
         },
         files: {

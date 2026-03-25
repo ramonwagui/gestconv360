@@ -29,6 +29,7 @@ enum AuditAction {
 }
 
 enum InstrumentWorkflowStage {
+  PROPOSTA
   REQUISITOS_CELEBRACAO
   PROJETO_BASICO_TERMO_REFERENCIA
   PROCESSO_EXECUCAO_LICITACAO
@@ -56,10 +57,13 @@ model User {
   email        String   @unique
   passwordHash String
   role         UserRole @default(CONSULTA)
+  avatarPath   String?
+  avatarMimeType String?
   createdAt    DateTime @default(now())
   updatedAt    DateTime @updatedAt
   auditLogs    AuditLog[]
   stageFollowUps InstrumentStageFollowUp[]
+  checklistExternalLinks InstrumentChecklistExternalLink[] @relation("ChecklistExternalLinkCreatedBy")
 }
 
 model InstrumentProposal {
@@ -69,6 +73,9 @@ model InstrumentProposal {
   objeto                String
   valorRepasse          Decimal
   valorContrapartida    Decimal
+  valorJaRepassado      Decimal          @default(0)
+  dataRepasse1          DateTime?
+  dataRepasse2          DateTime?
   dataCadastro          DateTime
   dataAssinatura        DateTime?
   vigenciaInicio        DateTime
@@ -91,6 +98,7 @@ model InstrumentProposal {
   workProgress          InstrumentWorkProgress?
   measurementBulletins  InstrumentMeasurementBulletin[]
   stageFollowUps        InstrumentStageFollowUp[]
+  repasses              InstrumentRepasse[]
 
   @@index([concedente])
   @@index([status])
@@ -102,7 +110,7 @@ model InstrumentProposal {
 model InstrumentChecklistItem {
   id                 Int      @id @default(autoincrement())
   instrumentId       Int
-  etapa              InstrumentWorkflowStage @default(REQUISITOS_CELEBRACAO)
+  etapa              InstrumentWorkflowStage @default(PROPOSTA)
   status             ChecklistItemStatus @default(NAO_INICIADO)
   nomeDocumento      String
   obrigatorio        Boolean  @default(true)
@@ -116,11 +124,61 @@ model InstrumentChecklistItem {
   uploadedAt         DateTime?
   createdAt          DateTime @default(now())
   updatedAt          DateTime @updatedAt
+  externalLinks      InstrumentChecklistExternalLink[]
 
   instrument InstrumentProposal @relation(fields: [instrumentId], references: [id], onDelete: Cascade)
 
   @@index([instrumentId, ordem])
   @@index([instrumentId, etapa, ordem])
+}
+
+model InstrumentRepasse {
+  id           Int      @id @default(autoincrement())
+  instrumentId Int
+  dataRepasse  DateTime
+  valorRepasse Decimal
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+
+  instrument InstrumentProposal @relation(fields: [instrumentId], references: [id], onDelete: Cascade)
+
+  @@index([instrumentId, dataRepasse])
+}
+
+model InstrumentChecklistExternalLink {
+  id               Int       @id @default(autoincrement())
+  checklistItemId  Int
+  token            String    @unique
+  ativo            Boolean   @default(true)
+  expiraEm         DateTime
+  createdByUserId  Int?
+  createdByEmail   String
+  createdAt        DateTime  @default(now())
+  updatedAt        DateTime  @updatedAt
+
+  checklistItem InstrumentChecklistItem @relation(fields: [checklistItemId], references: [id], onDelete: Cascade)
+  createdByUser User? @relation("ChecklistExternalLinkCreatedBy", fields: [createdByUserId], references: [id])
+  files         InstrumentChecklistExternalFile[]
+
+  @@index([checklistItemId, ativo])
+  @@index([token, ativo])
+  @@index([expiraEm])
+}
+
+model InstrumentChecklistExternalFile {
+  id               Int       @id @default(autoincrement())
+  externalLinkId   Int
+  nomeRemetente    String
+  arquivoPath      String
+  arquivoNomeOriginal String
+  arquivoMimeType  String?
+  arquivoTamanho   Int?
+  createdAt        DateTime  @default(now())
+  updatedAt        DateTime  @updatedAt
+
+  externalLink InstrumentChecklistExternalLink @relation(fields: [externalLinkId], references: [id], onDelete: Cascade)
+
+  @@index([externalLinkId, createdAt])
 }
 
 model InstrumentWorkProgress {

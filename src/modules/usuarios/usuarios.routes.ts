@@ -1,31 +1,148 @@
 import { Prisma, UserRole } from "@prisma/client";
+import { randomUUID } from "crypto";
+import { promises as fs } from "fs";
 import { Router } from "express";
+import multer from "multer";
+import path from "path";
 
 import { authenticate, authorizeRoles } from "../../middlewares/auth";
 import { createUserSchema, updateUserSchema, userIdParamSchema } from "./usuarios.schema";
-import { createUser, getUserById, listUsers, updateUser } from "./usuarios.service";
+import { clearUserAvatar, createUser, getUserById, listUsers, updateUser, updateUserAvatar } from "./usuarios.service";
 
 const router = Router();
 
-router.use(authenticate);
-router.use(authorizeRoles(UserRole.ADMIN));
+const avatarUploadRootPath = path.resolve(process.cwd(), "uploads", "avatars");
+const allowedAvatarMimes = new Set(["image/png", "image/jpeg"]);
+
+const upload = multer({
+  storage: multer.memoryStorage(),
+  limits: { fileSize: 5 * 1024 * 1024 },
+  fileFilter: (_req, file, cb) => {
+    if (!allowedAvatarMimes.has(file.mimetype)) {
+      cb(new Error("Formato de imagem invalido. Use PNG ou JPG."));
+      return;
+    }
+    cb(null, true);
+  }
+});
 
 const mapUser = (item: Awaited<ReturnType<typeof getUserById>>) => {
   if (!item) {
     return null;
   }
 
+  const avatarUrl = item.avatarPath ? `/api/v1/usuarios/avatar/${item.id}?v=${item.updatedAt.getTime()}` : null;
+
   return {
     id: item.id,
     nome: item.nome,
     email: item.email,
     role: item.role,
+    avatar_url: avatarUrl,
     created_at: item.createdAt.toISOString(),
     updated_at: item.updatedAt.toISOString()
   };
 };
 
-router.get("/", async (_req, res) => {
+router.get("/avatar/:id", async (req, res) => {
+  const idParam = userIdParamSchema.safeParse(req.params);
+  if (!idParam.success) {
+    return res.status(400).json({ message: "ID invalido." });
+  }
+
+  const user = await getUserById(idParam.data.id);
+  if (!user || !user.avatarPath) {
+    return res.status(404).json({ message: "Avatar nao encontrado." });
+  }
+
+  try {
+    await fs.access(user.avatarPath);
+    res.setHeader("Cross-Origin-Resource-Policy", "cross-origin");
+    if (user.avatarMimeType) {
+      res.type(user.avatarMimeType);
+    }
+    return res.sendFile(user.avatarPath);
+  } catch {
+    return res.status(404).json({ message: "Avatar nao encontrado." });
+  }
+});
+
+router.use(authenticate);
+
+router.get("/me", async (req, res) => {
+  if (!req.user) {
+    return res.status(401).json({ message: "Usuario nao autenticado." });
+  }
+
+  const me = await getUserById(req.user.id);
+  if (!me) {
+    return res.status(404).json({ message: "Usuario nao encontrado." });
+  }
+
+  return res.json(mapUser(me));
+});
+
+router.post("/me/avatar", upload.single("avatar"), async (req, res) => {
+  if (!req.user) {
+    return res.status(401).json({ message: "Usuario nao autenticado." });
+  }
+
+  const file = req.file;
+  if (!file) {
+    return res.status(422).json({ message: "Selecione uma imagem para avatar." });
+  }
+
+  const me = await getUserById(req.user.id);
+  if (!me) {
+    return res.status(404).json({ message: "Usuario nao encontrado." });
+  }
+
+  await fs.mkdir(avatarUploadRootPath, { recursive: true });
+
+  const extension = file.mimetype === "image/png" ? ".png" : ".jpg";
+  const fileName = `${req.user.id}-${Date.now()}-${randomUUID()}${extension}`;
+  const destination = path.join(avatarUploadRootPath, fileName);
+
+  try {
+    await fs.writeFile(destination, file.buffer);
+    const updated = await updateUserAvatar(req.user.id, {
+      avatarPath: destination,
+      avatarMimeType: file.mimetype
+    });
+
+    if (me.avatarPath && me.avatarPath !== destination) {
+      await fs.unlink(me.avatarPath).catch(() => undefined);
+    }
+
+    return res.json(mapUser(updated));
+  } catch {
+    await fs.unlink(destination).catch(() => undefined);
+    return res.status(500).json({ message: "Erro interno ao atualizar avatar." });
+  }
+});
+
+router.delete("/me/avatar", async (req, res) => {
+  if (!req.user) {
+    return res.status(401).json({ message: "Usuario nao autenticado." });
+  }
+
+  const me = await getUserById(req.user.id);
+  if (!me) {
+    return res.status(404).json({ message: "Usuario nao encontrado." });
+  }
+
+  if (!me.avatarPath) {
+    return res.status(204).end();
+  }
+
+  await clearUserAvatar(req.user.id);
+  await fs.unlink(me.avatarPath).catch(() => undefined);
+  return res.status(204).end();
+});
+
+router.use(authorizeRoles(UserRole.ADMIN));
+
+router.get("/", async (req, res) => {
   try {
     const items = await listUsers();
     return res.json(items.map((item) => mapUser(item)));

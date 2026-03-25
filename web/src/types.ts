@@ -5,6 +5,7 @@ export type User = {
   nome: string;
   email: string;
   role: Role;
+  avatar_url: string | null;
 };
 
 export type ManagedUser = {
@@ -12,6 +13,7 @@ export type ManagedUser = {
   nome: string;
   email: string;
   role: Role;
+  avatar_url: string | null;
   created_at: string;
   updated_at: string;
 };
@@ -39,6 +41,9 @@ export type Instrument = {
   objeto: string;
   valor_repasse: number;
   valor_contrapartida: number;
+  valor_ja_repassado: number;
+  percentual_repassado: number;
+  repasses: InstrumentRepasse[];
   valor_total: number;
   data_cadastro: string | null;
   data_assinatura: string | null;
@@ -95,7 +100,36 @@ export type ChecklistItemFile = {
   download_path: string;
 };
 
+export type InstrumentRepasse = {
+  id: number;
+  data_repasse: string;
+  valor_repasse: number;
+  created_at: string;
+  updated_at: string;
+};
+
+export type ChecklistExternalRequest = {
+  token: string;
+  ativo: boolean;
+  expira_em: string;
+  link_publico: string;
+  arquivos_recebidos: number;
+};
+
+export type ChecklistExternalFile = {
+  id: number;
+  nome_remetente: string;
+  nome_original: string;
+  mime_type: string | null;
+  tamanho: number | null;
+  created_at: string;
+  origem_link_ativo: boolean;
+  origem_link_expira_em: string | null;
+  download_path: string;
+};
+
 export type WorkflowStage =
+  | "PROPOSTA"
   | "REQUISITOS_CELEBRACAO"
   | "PROJETO_BASICO_TERMO_REFERENCIA"
   | "PROCESSO_EXECUCAO_LICITACAO"
@@ -109,12 +143,15 @@ export type ChecklistItem = {
   id: number;
   etapa: WorkflowStage;
   status: ChecklistItemStatus;
+  status_label: string;
   nome_documento: string;
   obrigatorio: boolean;
   concluido: boolean;
   observacao: string | null;
   ordem: number;
   arquivo: ChecklistItemFile | null;
+  solicitacao_externa: ChecklistExternalRequest | null;
+  anexos_externos: ChecklistExternalFile[];
   created_at: string;
   updated_at: string;
 };
@@ -160,6 +197,7 @@ export type StageFollowUp = {
     id: number | null;
     nome: string | null;
     email: string;
+    avatar_url: string | null;
   };
   arquivos: StageFollowUpFile[];
   created_at: string;
@@ -190,6 +228,12 @@ export type ApiError = {
   error?: string;
   path?: string;
   issues?: unknown;
+};
+
+export type HealthResponse = {
+  status: string;
+  version?: string;
+  timestamp?: string;
 };
 
 export type DeadlineAlertItem = {
@@ -246,4 +290,76 @@ export type ConvenetePayload = {
   cidade: string;
   tel: string;
   email: string;
+};
+
+export type RepasseReportFilters = {
+  convenete_id: number;
+  convenete_nome: string;
+  convenete_cnpj: string;
+  instrumento_id: number | null;
+  data_de: string | null;
+  data_ate: string | null;
+};
+
+export type RepasseReportKpis = {
+  instrumentos: number;
+  quantidade_repasses: number;
+  valor_repassado_periodo: number;
+  ticket_medio_repasse: number;
+  valor_pactuado: number;
+  valor_ja_repassado: number;
+  saldo_pactuado: number;
+  percentual_repassado: number;
+};
+
+export type RepasseReportMonthlyPoint = {
+  mes: string;
+  valor: number;
+};
+
+export type RepasseReportByInstrumentPoint = {
+  instrumento_id: number;
+  instrumento: string;
+  proposta: string;
+  valor: number;
+};
+
+export type RepasseReportByStatusPoint = {
+  status: InstrumentStatus;
+  quantidade: number;
+};
+
+export type RepasseReportInstrument = {
+  id: number;
+  proposta: string;
+  instrumento: string;
+  status: InstrumentStatus;
+  empresa_vencedora: string | null;
+  valor_pactuado: number;
+  valor_ja_repassado: number;
+  valor_repassado_periodo: number;
+  saldo_pactuado: number;
+  percentual_obra: number | null;
+};
+
+export type RepasseReportRepasse = {
+  id: number;
+  instrumento_id: number;
+  proposta: string;
+  instrumento: string;
+  data_repasse: string;
+  valor_repasse: number;
+  empresa_vencedora: string | null;
+};
+
+export type RepasseReportResponse = {
+  filtros: RepasseReportFilters;
+  kpis: RepasseReportKpis;
+  series: {
+    repasses_mensais: RepasseReportMonthlyPoint[];
+    repasses_por_instrumento: RepasseReportByInstrumentPoint[];
+    instrumentos_por_status: RepasseReportByStatusPoint[];
+  };
+  instrumentos: RepasseReportInstrument[];
+  repasses: RepasseReportRepasse[];
 };

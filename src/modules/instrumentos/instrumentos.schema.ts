@@ -16,6 +16,7 @@ export const instrumentFlowTypeSchema = z.enum([
 ]);
 
 export const workflowStageSchema = z.enum([
+  "PROPOSTA",
   "REQUISITOS_CELEBRACAO",
   "PROJETO_BASICO_TERMO_REFERENCIA",
   "PROCESSO_EXECUCAO_LICITACAO",
@@ -119,7 +120,7 @@ export const alertQuerySchema = z.object({
 
 export const checklistItemCreateSchema = z.object({
   nome_documento: z.string().min(3).max(180),
-  etapa: workflowStageSchema.optional().default("REQUISITOS_CELEBRACAO"),
+  etapa: workflowStageSchema.optional().default("PROPOSTA"),
   status: checklistItemStatusSchema.optional().default("NAO_INICIADO"),
   obrigatorio: z.boolean().optional().default(true),
   observacao: optionalText,
@@ -130,6 +131,22 @@ export const checklistItemUpdateSchema = checklistItemCreateSchema.partial();
 
 export const checklistItemIdParamSchema = z.object({
   itemId: z.coerce.number().int().positive()
+});
+
+export const checklistExternalLinkCreateSchema = z.object({
+  validade_dias: z.coerce.number().int().min(1).max(30).default(7)
+});
+
+export const checklistExternalLinkTokenParamSchema = z.object({
+  token: z.string().min(20).max(200)
+});
+
+export const checklistExternalUploadBodySchema = z.object({
+  nome_remetente: z.string().min(2).max(120)
+});
+
+export const checklistExternalFileIdParamSchema = z.object({
+  fileId: z.coerce.number().int().positive()
 });
 
 export const stageParamSchema = z.object({
@@ -168,6 +185,15 @@ export const measurementIdParamSchema = z.object({
   boletimId: z.coerce.number().int().positive()
 });
 
+export const repasseCreateSchema = z.object({
+  data_repasse: dateString,
+  valor_repasse: z.coerce.number().min(0)
+});
+
+export const repasseIdParamSchema = z.object({
+  repasseId: z.coerce.number().int().positive()
+});
+
 export type CreateInstrumentInput = z.infer<typeof createInstrumentSchema>;
 export type UpdateInstrumentInput = z.infer<typeof updateInstrumentSchema>;
 export type ListQueryInput = z.infer<typeof listQuerySchema>;
@@ -177,3 +203,6 @@ export type ChecklistItemUpdateInput = z.infer<typeof checklistItemUpdateSchema>
 export type WorkProgressUpdateInput = z.infer<typeof workProgressUpdateSchema>;
 export type MeasurementCreateInput = z.infer<typeof measurementCreateSchema>;
 export type StageFollowUpCreateInput = z.infer<typeof stageFollowUpCreateSchema>;
+export type ChecklistExternalLinkCreateInput = z.infer<typeof checklistExternalLinkCreateSchema>;
+export type ChecklistExternalUploadBodyInput = z.infer<typeof checklistExternalUploadBodySchema>;
+export type RepasseCreateInput = z.infer<typeof repasseCreateSchema>;

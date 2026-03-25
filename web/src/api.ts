@@ -2,6 +2,7 @@ import type {
   ApiError,
   AuditAction,
   AuditLogItem,
+  ChecklistExternalFile,
   AuthResponse,
   ChecklistItem,
   ChecklistItemStatus,
@@ -10,12 +11,16 @@ import type {
   ConvenetePayload,
   DeadlineAlertResponse,
   InstrumentFilters,
+  InstrumentRepasse,
   InstrumentPayload,
   Instrument,
   ManagedUser,
+  HealthResponse,
   Role,
+  RepasseReportResponse,
   StageFollowUp,
   StageFollowUpListResponse,
+  User,
   WorkProgress,
   WorkflowStage
 } from "./types";
@@ -210,6 +215,98 @@ export const updateChecklistItem = (
     body: JSON.stringify(payload)
   });
 
+export const getMyProfile = (token: string) =>
+  request<User>("/api/v1/usuarios/me", {
+    headers: {
+      Authorization: `Bearer ${token}`
+    }
+  });
+
+export const uploadMyAvatar = async (token: string, file: File) => {
+  const formData = new FormData();
+  formData.append("avatar", file);
+
+  return request<User>("/api/v1/usuarios/me/avatar", {
+    method: "POST",
+    headers: {
+      Authorization: `Bearer ${token}`
+    },
+    body: formData
+  });
+};
+
+export const removeMyAvatar = (token: string) =>
+  request<void>("/api/v1/usuarios/me/avatar", {
+    method: "DELETE",
+    headers: {
+      Authorization: `Bearer ${token}`
+    }
+  });
+
+export const createChecklistExternalLink = (
+  token: string,
+  instrumentId: number,
+  itemId: number,
+  validadeDias = 7
+) =>
+  request<{
+    token: string;
+    ativo: boolean;
+    expira_em: string;
+    validade_dias: number;
+    link_publico: string;
+  }>(`/api/v1/instrumentos/${instrumentId}/checklist/${itemId}/external-link`, {
+    method: "POST",
+    headers: {
+      Authorization: `Bearer ${token}`
+    },
+    body: JSON.stringify({ validade_dias: validadeDias })
+  });
+
+export const deactivateChecklistExternalLink = (token: string, instrumentId: number, itemId: number) =>
+  request<{ message: string; desativados: number }>(`/api/v1/instrumentos/${instrumentId}/checklist/${itemId}/external-link`, {
+    method: "DELETE",
+    headers: {
+      Authorization: `Bearer ${token}`
+    }
+  });
+
+export const listChecklistExternalFiles = (token: string, instrumentId: number, itemId: number) =>
+  request<{ itens: ChecklistExternalFile[] }>(`/api/v1/instrumentos/${instrumentId}/checklist/${itemId}/external-files`, {
+    headers: {
+      Authorization: `Bearer ${token}`
+    }
+  });
+
+export const downloadChecklistExternalFile = async (
+  token: string,
+  instrumentId: number,
+  itemId: number,
+  fileId: number,
+  fallbackName = "arquivo"
+) => {
+  const res = await fetch(
+    buildUrl(`/api/v1/instrumentos/${instrumentId}/checklist/${itemId}/external-files/${fileId}/download`),
+    {
+      headers: {
+        Authorization: `Bearer ${token}`
+      }
+    }
+  );
+
+  if (!res.ok) {
+    throw new Error(await getErrorMessage(res));
+  }
+
+  const blob = await res.blob();
+  const url = URL.createObjectURL(blob);
+  const link = document.createElement("a");
+  link.href = url;
+  link.download = fallbackName;
+  link.click();
+  URL.revokeObjectURL(url);
+};
+
 export const uploadChecklistItemFile = (token: string, instrumentId: number, itemId: number, file: File) => {
   const formData = new FormData();
   formData.append("arquivo", file);
@@ -337,6 +434,34 @@ export const updateInstrument = (token: string, id: number, payload: Partial<Ins
     body: JSON.stringify(payload)
   });
 
+export const addInstrumentRepasse = (
+  token: string,
+  instrumentId: number,
+  payload: { data_repasse: string; valor_repasse: number }
+) =>
+  request<Instrument>(`/api/v1/instrumentos/${instrumentId}/repasses`, {
+    method: "POST",
+    headers: {
+      Authorization: `Bearer ${token}`
+    },
+    body: JSON.stringify(payload)
+  });
+
+export const deleteInstrumentRepasse = (token: string, instrumentId: number, repasseId: number) =>
+  request<Instrument>(`/api/v1/instrumentos/${instrumentId}/repasses/${repasseId}`, {
+    method: "DELETE",
+    headers: {
+      Authorization: `Bearer ${token}`
+    }
+  });
+
+export const listInstrumentRepasses = (token: string, instrumentId: number) =>
+  request<{ itens: InstrumentRepasse[] }>(`/api/v1/instrumentos/${instrumentId}/repasses`, {
+    headers: {
+      Authorization: `Bearer ${token}`
+    }
+  });
+
 export const deactivateInstrument = (token: string, id: number) =>
   request<void>(`/api/v1/instrumentos/${id}`, {
     method: "DELETE",
@@ -400,7 +525,7 @@ export const deleteWorkMeasurementBulletin = (token: string, instrumentId: numbe
     }
   });
 
-export const healthCheck = () => request<{ status: string }>("/health");
+export const healthCheck = () => request<HealthResponse>("/health");
 
 export const listAuditLogs = (
   token: string,
@@ -452,3 +577,22 @@ export const deleteConvenete = (token: string, id: number) =>
       Authorization: `Bearer ${token}`
     }
   });
+
+export const getRepasseReport = (
+  token: string,
+  query: { convenete_id: number; instrumento_id?: number; data_de?: string; data_ate?: string }
+) =>
+  request<RepasseReportResponse>(
+    "/api/v1/relatorios/repasses",
+    {
+      headers: {
+        Authorization: `Bearer ${token}`
+      }
+    },
+    {
+      convenete_id: String(query.convenete_id),
+      instrumento_id: query.instrumento_id ? String(query.instrumento_id) : "",
+      data_de: query.data_de ?? "",
+      data_ate: query.data_ate ?? ""
+    }
+  );

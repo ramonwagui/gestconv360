@@ -1,33 +1,43 @@
-import { DragEvent, FormEvent, useEffect, useMemo, useState } from "react";
+import { ChangeEvent, DragEvent, FormEvent, useEffect, useMemo, useState } from "react";
 
 import {
   addWorkMeasurementBulletin,
+  addInstrumentRepasse,
   addChecklistItem,
   createUserAdmin,
+  createChecklistExternalLink,
+  deactivateChecklistExternalLink as deactivateChecklistExternalLinkApi,
   createConvenete,
   createInstrument,
   deleteWorkMeasurementBulletin,
+  deleteInstrumentRepasse,
   deleteConvenete,
   deactivateInstrument,
   deleteChecklistItem,
+  downloadChecklistExternalFile,
   downloadStageFollowUpFile,
   getInstrumentById,
   getInstrumentChecklist,
+  getMyProfile,
+  getRepasseReport,
   getWorkProgress,
   healthCheck,
   listAuditLogs,
   listConvenetes,
   listDeadlineAlerts,
   listInstruments,
+  listInstrumentRepasses,
   listUsersAdmin,
   login,
+  removeMyAvatar,
   createStageFollowUp,
   listStageFollowUps,
   updateUserAdmin,
   updateChecklistItem,
   updateConvenete,
   updateWorkProgress,
-  updateInstrument
+  updateInstrument,
+  uploadMyAvatar
 } from "./api";
 import type {
   AuditAction,
@@ -45,6 +55,7 @@ import type {
   InstrumentStatus,
   ManagedUser,
   Role,
+  RepasseReportResponse,
   StageFollowUp,
   User,
   WorkProgress,
@@ -74,6 +85,7 @@ const FLOW_TYPE_LABELS: Record<InstrumentFlowType, string> = {
 };
 
 const WORKFLOW_STAGES: WorkflowStage[] = [
+  "PROPOSTA",
   "REQUISITOS_CELEBRACAO",
   "PROJETO_BASICO_TERMO_REFERENCIA",
   "PROCESSO_EXECUCAO_LICITACAO",
@@ -89,15 +101,26 @@ const CHECKLIST_STATUS_OPTIONS: ChecklistItemStatus[] = [
   "ACEITO"
 ];
 
+const EXTERNAL_LINK_VALIDITY_OPTIONS = [1, 3, 7, 15, 30] as const;
+
 const CHECKLIST_STATUS_LABELS: Record<ChecklistItemStatus, string> = {
-  NAO_INICIADO: "Nao iniciado",
+  NAO_INICIADO: "Em analise",
   EM_ELABORACAO: "Em elaboracao",
   CONCLUIDO: "Concluido",
   ACEITO: "Aceito"
 };
 
+const PROPOSTA_STATUS_OPTIONS: ChecklistItemStatus[] = ["NAO_INICIADO", "ACEITO", "EM_ELABORACAO"];
+const PROPOSTA_STATUS_LABELS: Record<ChecklistItemStatus, string> = {
+  ACEITO: "Aprovado",
+  EM_ELABORACAO: "Ajustar",
+  CONCLUIDO: "Aprovado",
+  NAO_INICIADO: "Em analise"
+};
+
 const STAGE_LABELS_BY_FLOW: Record<InstrumentFlowType, Record<WorkflowStage, string>> = {
   OBRA: {
+    PROPOSTA: "Proposta",
     REQUISITOS_CELEBRACAO: "Requisitos de Celebracao",
     PROJETO_BASICO_TERMO_REFERENCIA: "Projeto Basico / Termo de Referencia",
     PROCESSO_EXECUCAO_LICITACAO: "Processo de Execucao (Licitacao)",
@@ -106,6 +129,7 @@ const STAGE_LABELS_BY_FLOW: Record<InstrumentFlowType, Record<WorkflowStage, str
     ACOMPANHAMENTO_OBRA: "Acompanhamento de Obra"
   },
   AQUISICAO_EQUIPAMENTOS: {
+    PROPOSTA: "Proposta",
     REQUISITOS_CELEBRACAO: "Requisitos de Celebracao",
     PROJETO_BASICO_TERMO_REFERENCIA: "Termo de Referencia e Projeto",
     PROCESSO_EXECUCAO_LICITACAO: "Processo de Aquisicao (Licitacao)",
@@ -114,6 +138,7 @@ const STAGE_LABELS_BY_FLOW: Record<InstrumentFlowType, Record<WorkflowStage, str
     ACOMPANHAMENTO_OBRA: "Acompanhamento de Entregas"
   },
   EVENTOS: {
+    PROPOSTA: "Proposta",
     REQUISITOS_CELEBRACAO: "Requisitos de Celebracao",
     PROJETO_BASICO_TERMO_REFERENCIA: "Plano Basico do Evento",
     PROCESSO_EXECUCAO_LICITACAO: "Processo de Contratacao",
@@ -128,6 +153,7 @@ const getStageLabels = (flowType?: InstrumentFlowType) => {
 };
 
 const emptyStageFollowUps = (): Record<WorkflowStage, StageFollowUp[]> => ({
+  PROPOSTA: [],
   REQUISITOS_CELEBRACAO: [],
   PROJETO_BASICO_TERMO_REFERENCIA: [],
   PROCESSO_EXECUCAO_LICITACAO: [],
@@ -136,8 +162,24 @@ const emptyStageFollowUps = (): Record<WorkflowStage, StageFollowUp[]> => ({
   ACOMPANHAMENTO_OBRA: []
 });
 
-type MenuView = "dashboard" | "instrumentos" | "convenetes" | "usuarios" | "auditoria";
+type MenuView = "dashboard" | "instrumentos" | "convenetes" | "usuarios" | "auditoria" | "relatorios";
 type StageFollowUpFilter = "TODOS" | "SO_MEUS" | "COM_ANEXO" | "COM_TEXTO";
+type ReportPdfMode = "executivo" | "analitico";
+
+type ReportFilters = {
+  convenete_id: string;
+  instrumento_id: string;
+  data_de: string;
+  data_ate: string;
+};
+
+type TechnicalRouteStatus = "checking" | "ok" | "missing" | "error";
+
+type TechnicalHealthState = {
+  backendVersion: string;
+  reportRouteStatus: TechnicalRouteStatus;
+  lastCheckedAt: string | null;
+};
 
 const STAGE_FOLLOW_UP_FILTER_LABELS: Record<StageFollowUpFilter, string> = {
   TODOS: "Todos",
@@ -207,12 +249,70 @@ const formatFileSize = (size: number) => {
   return `${(kb / 1024).toFixed(1)} MB`;
 };
 
+const toAbsoluteUrl = (value: string) => {
+  if (value.startsWith("http://") || value.startsWith("https://")) {
+    try {
+      const parsed = new URL(value);
+      if (parsed.pathname.startsWith("/api/") && parsed.host !== window.location.host) {
+        return `${parsed.pathname}${parsed.search}`;
+      }
+      return value;
+    } catch {
+      return value;
+    }
+  }
+  return new URL(value, window.location.origin).toString();
+};
+
+const getExternalLinkState = (file: { origem_link_ativo: boolean; origem_link_expira_em: string | null }) => {
+  if (file.origem_link_ativo) {
+    return { label: "Link ativo", tone: "ok" as const };
+  }
+  if (file.origem_link_expira_em && new Date(file.origem_link_expira_em).getTime() < Date.now()) {
+    return { label: "Link expirado", tone: "warn" as const };
+  }
+  return { label: "Link desativado", tone: "warn" as const };
+};
+
+const getChecklistStatusVisual = (status: ChecklistItemStatus) => {
+  if (status === "ACEITO" || status === "CONCLUIDO") {
+    return { icon: "✓", tone: "done" as const };
+  }
+  if (status === "EM_ELABORACAO") {
+    return { icon: "!", tone: "adjust" as const };
+  }
+  return { icon: "i", tone: "analysis" as const };
+};
+
+const getChecklistStatusOptionLabel = (status: ChecklistItemStatus, label: string) => {
+  return `${getChecklistStatusVisual(status).icon} ${label}`;
+};
+
+const getInitials = (name: string | null | undefined, email: string) => {
+  const base = (name && name.trim().length > 0 ? name : email).trim();
+  if (base.length === 0) {
+    return "U";
+  }
+  const parts = base.split(/\s+/).filter(Boolean);
+  if (parts.length === 1) {
+    return parts[0].slice(0, 2).toUpperCase();
+  }
+  return `${parts[0][0] ?? ""}${parts[1][0] ?? ""}`.toUpperCase();
+};
+
 const blankFilters = (): InstrumentFilters => ({
   status: "",
   concedente: "",
   ativo: "true",
   vigencia_de: "",
   vigencia_ate: ""
+});
+
+const emptyReportFilters = (): ReportFilters => ({
+  convenete_id: "",
+  instrumento_id: "",
+  data_de: "",
+  data_ate: ""
 });
 
 const emptyInstrumentForm = (): InstrumentForm => ({
@@ -262,7 +362,17 @@ const readStoredUser = (): User | null => {
   }
 
   try {
-    return JSON.parse(raw) as User;
+    const parsed = JSON.parse(raw) as Partial<User>;
+    if (!parsed || typeof parsed.id !== "number" || typeof parsed.nome !== "string" || typeof parsed.email !== "string") {
+      return null;
+    }
+    return {
+      id: parsed.id,
+      nome: parsed.nome,
+      email: parsed.email,
+      role: (parsed.role as User["role"]) ?? "CONSULTA",
+      avatar_url: parsed.avatar_url ?? null
+    };
   } catch {
     return null;
   }
@@ -299,6 +409,30 @@ const formatCurrencyInput = (value: number) =>
   });
 
 const normalizeCurrencyInput = (value: string) => formatCurrencyInput(parseCurrencyInput(value));
+
+const calculateRepassePercentage = (valorJaRepassado: number, valorRepasse: number) => {
+  if (valorRepasse <= 0) {
+    return 0;
+  }
+
+  const percentage = (valorJaRepassado / valorRepasse) * 100;
+  return Math.max(0, Math.min(100, percentage));
+};
+
+const withLoadedRepasses = async (authToken: string, instrument: Instrument): Promise<Instrument> => {
+  try {
+    const response = await listInstrumentRepasses(authToken, instrument.id);
+    return {
+      ...instrument,
+      repasses: response.itens ?? []
+    };
+  } catch {
+    return {
+      ...instrument,
+      repasses: instrument.repasses ?? []
+    };
+  }
+};
 
 const toPayload = (form: InstrumentForm): InstrumentPayload => {
   const valorRepasse = parseCurrencyInput(form.valor_repasse);
@@ -367,7 +501,7 @@ const toCsvCell = (value: string | number | boolean | null | undefined) => {
 };
 
 const exportCsv = (items: Instrument[]) => {
-  const columns: Array<keyof Instrument> = [
+  const columns = [
     "id",
     "proposta",
     "instrumento",
@@ -380,10 +514,14 @@ const exportCsv = (items: Instrument[]) => {
     "vigencia_fim",
     "responsavel",
     "ativo"
-  ];
+  ] as const;
+  type CsvColumn = (typeof columns)[number];
 
   const header = columns.map((col) => toCsvCell(col)).join(";");
-  const rows = items.map((item) => columns.map((col) => toCsvCell(item[col])).join(";"));
+  const rows = items.map((item) => {
+    const row = item as unknown as Record<CsvColumn, string | number | boolean | null | undefined>;
+    return columns.map((col) => toCsvCell(row[col])).join(";");
+  });
   const csv = [header, ...rows].join("\n");
 
   const blob = new Blob([csv], { type: "text/csv;charset=utf-8;" });
@@ -414,10 +552,91 @@ const exportExcel = (items: Instrument[]) => {
   URL.revokeObjectURL(url);
 };
 
+const exportRepasseReportCsv = (report: RepasseReportResponse) => {
+  const columns = [
+    "id",
+    "instrumento_id",
+    "proposta",
+    "instrumento",
+    "data_repasse",
+    "valor_repasse",
+    "empresa_vencedora"
+  ] as const;
+  type CsvColumn = (typeof columns)[number];
+
+  const header = columns.map((col) => toCsvCell(col)).join(";");
+  const rows = report.repasses.map((item) => {
+    const row = item as unknown as Record<CsvColumn, string | number | null>;
+    return columns.map((col) => toCsvCell(row[col])).join(";");
+  });
+  const csv = [header, ...rows].join("\n");
+  const blob = new Blob([csv], { type: "text/csv;charset=utf-8;" });
+  const url = URL.createObjectURL(blob);
+  const link = document.createElement("a");
+  link.href = url;
+  link.download = `relatorio-repasses-${report.filtros.convenete_id}-${todayDate()}.csv`;
+  link.click();
+  URL.revokeObjectURL(url);
+};
+
+const exportRepasseReportExcel = (report: RepasseReportResponse) => {
+  const repasseRows = report.repasses
+    .map(
+      (item) =>
+        `<tr><td>${item.id}</td><td>${item.instrumento_id}</td><td>${item.proposta}</td><td>${item.instrumento}</td><td>${item.data_repasse}</td><td>${item.valor_repasse}</td><td>${item.empresa_vencedora ?? ""}</td></tr>`
+    )
+    .join("");
+
+  const instrumentoRows = report.instrumentos
+    .map(
+      (item) =>
+        `<tr><td>${item.id}</td><td>${item.proposta}</td><td>${item.instrumento}</td><td>${item.status}</td><td>${item.empresa_vencedora ?? ""}</td><td>${item.valor_pactuado}</td><td>${item.valor_ja_repassado}</td><td>${item.valor_repassado_periodo}</td><td>${item.saldo_pactuado}</td></tr>`
+    )
+    .join("");
+
+  const html = `<!doctype html><html><head><meta charset="utf-8" /></head><body><h3>Resumo</h3><table border="1"><tbody><tr><td>Convenete</td><td>${report.filtros.convenete_nome}</td></tr><tr><td>CNPJ</td><td>${report.filtros.convenete_cnpj}</td></tr><tr><td>Valor repassado no periodo</td><td>${report.kpis.valor_repassado_periodo}</td></tr><tr><td>Quantidade de repasses</td><td>${report.kpis.quantidade_repasses}</td></tr><tr><td>% repassado</td><td>${report.kpis.percentual_repassado.toFixed(2)}%</td></tr></tbody></table><h3>Repasses</h3><table border="1"><thead><tr><th>ID</th><th>Instrumento ID</th><th>Proposta</th><th>Instrumento</th><th>Data</th><th>Valor</th><th>Empresa vencedora</th></tr></thead><tbody>${repasseRows}</tbody></table><h3>Instrumentos</h3><table border="1"><thead><tr><th>ID</th><th>Proposta</th><th>Instrumento</th><th>Status</th><th>Empresa vencedora</th><th>Valor pactuado</th><th>Valor ja repassado</th><th>Repassado no periodo</th><th>Saldo</th></tr></thead><tbody>${instrumentoRows}</tbody></table></body></html>`;
+
+  const blob = new Blob([html], { type: "application/vnd.ms-excel;charset=utf-8;" });
+  const url = URL.createObjectURL(blob);
+  const link = document.createElement("a");
+  link.href = url;
+  link.download = `relatorio-repasses-${report.filtros.convenete_id}-${todayDate()}.xls`;
+  link.click();
+  URL.revokeObjectURL(url);
+};
+
+const exportRepasseReportPdf = (report: RepasseReportResponse, mode: ReportPdfMode) => {
+  const popup = window.open("", "_blank");
+  if (!popup) {
+    return;
+  }
+
+  const repasseRows = report.repasses
+    .map(
+      (item) =>
+        `<tr><td>${item.data_repasse}</td><td>${item.instrumento}</td><td style="text-align:right">${formatCurrency(item.valor_repasse)}</td><td>${item.empresa_vencedora ?? "-"}</td></tr>`
+    )
+    .join("");
+  const instrumentRows = report.instrumentos
+    .map(
+      (item) =>
+        `<tr><td>${item.instrumento}</td><td>${item.status}</td><td style="text-align:right">${formatCurrency(item.valor_pactuado)}</td><td style="text-align:right">${formatCurrency(item.valor_ja_repassado)}</td><td style="text-align:right">${formatCurrency(item.saldo_pactuado)}</td></tr>`
+    )
+    .join("");
+
+  popup.document.write(`<!doctype html><html><head><meta charset="utf-8" /><title>Relatorio de repasses</title><style>body{font-family:Segoe UI,Arial,sans-serif;padding:24px;color:#102a43}.report-head{display:flex;align-items:center;justify-content:space-between;gap:12px;margin-bottom:14px}.report-head img{max-width:180px;height:auto;display:block}h1,h2{margin:0 0 12px}table{width:100%;border-collapse:collapse;margin-top:12px}th,td{border:1px solid #cbd5e1;padding:8px;font-size:12px;text-align:left}.kpi{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:10px;margin:16px 0}.kpi div{border:1px solid #cbd5e1;border-radius:8px;padding:10px}</style></head><body><div class="report-head"><img src="/api/v1/public/brand-logo" alt="NC Convenios" /><h1>Relatorio de repasses (${mode})</h1></div><p><strong>Convenete:</strong> ${report.filtros.convenete_nome} (${report.filtros.convenete_cnpj})</p><p><strong>Periodo:</strong> ${report.filtros.data_de ?? "inicio"} ate ${report.filtros.data_ate ?? "hoje"}</p><div class="kpi"><div><strong>Repassado no periodo</strong><br/>${formatCurrency(report.kpis.valor_repassado_periodo)}</div><div><strong>Qtd repasses</strong><br/>${report.kpis.quantidade_repasses}</div><div><strong>Valor pactuado</strong><br/>${formatCurrency(report.kpis.valor_pactuado)}</div><div><strong>% repassado</strong><br/>${report.kpis.percentual_repassado.toFixed(2)}%</div></div>${mode === "analitico" ? `<h2>Instrumentos</h2><table><thead><tr><th>Instrumento</th><th>Status</th><th>Pactuado</th><th>Ja repassado</th><th>Saldo</th></tr></thead><tbody>${instrumentRows}</tbody></table>` : ""}<h2>Repasses</h2><table><thead><tr><th>Data</th><th>Instrumento</th><th>Valor</th><th>Empresa vencedora</th></tr></thead><tbody>${repasseRows}</tbody></table><script>window.print()</script></body></html>`);
+  popup.document.close();
+};
+
 export default function App() {
   const logoSrc = "/logo-gestconv-novo-semfundo-removebg-preview.png";
 
   const [healthStatus, setHealthStatus] = useState<"checking" | "ok" | "error">("checking");
+  const [technicalHealth, setTechnicalHealth] = useState<TechnicalHealthState>({
+    backendVersion: "desconhecida",
+    reportRouteStatus: "checking",
+    lastCheckedAt: null
+  });
   const [activeView, setActiveView] = useState<MenuView>(() =>
     readInstrumentIdFromPath(window.location.pathname) ? "instrumentos" : "dashboard"
   );
@@ -451,9 +670,11 @@ export default function App() {
   const [checklistDocName, setChecklistDocName] = useState("");
   const [checklistRequired, setChecklistRequired] = useState(true);
   const [checklistNote, setChecklistNote] = useState("");
-  const [checklistStage, setChecklistStage] = useState<WorkflowStage>("REQUISITOS_CELEBRACAO");
-  const [activeWorkflowStage, setActiveWorkflowStage] = useState<WorkflowStage>("REQUISITOS_CELEBRACAO");
+  const [checklistStage, setChecklistStage] = useState<WorkflowStage>("PROPOSTA");
+  const [externalLinkValidityDays, setExternalLinkValidityDays] = useState<number>(7);
+  const [activeWorkflowStage, setActiveWorkflowStage] = useState<WorkflowStage | null>(null);
   const [busyChecklistItemId, setBusyChecklistItemId] = useState<number | null>(null);
+  const [busyExternalLinkItemId, setBusyExternalLinkItemId] = useState<number | null>(null);
   const [stageFollowUps, setStageFollowUps] = useState<Record<WorkflowStage, StageFollowUp[]>>(() =>
     emptyStageFollowUps()
   );
@@ -464,19 +685,28 @@ export default function App() {
   const [stageFollowUpModalStage, setStageFollowUpModalStage] = useState<WorkflowStage | null>(null);
   const [stageFollowUpFilter, setStageFollowUpFilter] = useState<StageFollowUpFilter>("TODOS");
   const [expandedFollowUpIds, setExpandedFollowUpIds] = useState<number[]>([]);
+  const [expandedChecklistAttachmentItemIds, setExpandedChecklistAttachmentItemIds] = useState<number[]>([]);
   const [workProgress, setWorkProgress] = useState<WorkProgress | null>(null);
   const [obraPercentual, setObraPercentual] = useState("0");
   const [boletimData, setBoletimData] = useState(todayDate());
   const [boletimValor, setBoletimValor] = useState(formatCurrencyInput(0));
   const [boletimPercentual, setBoletimPercentual] = useState("");
   const [boletimObservacao, setBoletimObservacao] = useState("");
+  const [showRepassePanel, setShowRepassePanel] = useState(false);
+  const [showWorkProgressPanel, setShowWorkProgressPanel] = useState(false);
+  const [repasseValorInput, setRepasseValorInput] = useState(formatCurrencyInput(0));
+  const [repasseDataInput, setRepasseDataInput] = useState(todayDate());
+  const [empresaVencedoraInput, setEmpresaVencedoraInput] = useState("");
 
   const [convenetes, setConvenetes] = useState<Convenete[]>([]);
+  const [reportFilters, setReportFilters] = useState<ReportFilters>(() => emptyReportFilters());
+  const [reportData, setReportData] = useState<RepasseReportResponse | null>(null);
   const [conveneteForm, setConveneteForm] = useState<ConveneteForm>(() => emptyConveneteForm());
   const [editingConveneteId, setEditingConveneteId] = useState<number | null>(null);
   const [managedUsers, setManagedUsers] = useState<ManagedUser[]>([]);
   const [adminUserForm, setAdminUserForm] = useState<AdminUserForm>(() => emptyAdminUserForm());
   const [editingManagedUserId, setEditingManagedUserId] = useState<number | null>(null);
+  const [isUploadingAvatar, setIsUploadingAvatar] = useState(false);
 
   const isAuthenticated = Boolean(token && user);
   const canManageInstruments = user?.role === "ADMIN" || user?.role === "GESTOR";
@@ -505,7 +735,22 @@ export default function App() {
     return null;
   }, [instrumentPageId, sortedInstruments, selectedInstrument]);
   const currentFlowType: InstrumentFlowType = profileInstrument?.fluxo_tipo ?? "OBRA";
+  const isEditingProfileInstrument = Boolean(
+    canManageInstruments && isInstrumentProfileView && profileInstrument && editingId === profileInstrument.id
+  );
   const stageLabels = getStageLabels(currentFlowType);
+  const repassePercentualAtual = profileInstrument
+    ? calculateRepassePercentage(profileInstrument.valor_ja_repassado, profileInstrument.valor_repasse)
+    : 0;
+  const profileInstrumentRepasses = profileInstrument?.repasses ?? [];
+  const reportInstrumentOptions = useMemo(() => {
+    if (reportFilters.convenete_id.trim() === "") {
+      return [];
+    }
+
+    const conveneteId = Number(reportFilters.convenete_id);
+    return sortedInstruments.filter((item) => item.convenete_id === conveneteId);
+  }, [reportFilters.convenete_id, sortedInstruments]);
 
   const dashboard = useMemo(() => {
     const totalRegistros = overviewItems.length;
@@ -526,10 +771,42 @@ export default function App() {
     };
   }, [overviewItems, alerts]);
 
+  const refreshTechnicalHealth = async () => {
+    let backendVersion = "desconhecida";
+
+    try {
+      const health = await healthCheck();
+      setHealthStatus("ok");
+      backendVersion = health.version?.trim() ? health.version : "desconhecida";
+    } catch {
+      setHealthStatus("error");
+      setTechnicalHealth((prev) => ({
+        ...prev,
+        reportRouteStatus: "error",
+        lastCheckedAt: new Date().toISOString()
+      }));
+      return;
+    }
+
+    try {
+      const smokeResponse = await fetch("/api/v1/relatorios/repasses?convenete_id=1");
+      const routeStatus: TechnicalRouteStatus = smokeResponse.status === 404 ? "missing" : "ok";
+      setTechnicalHealth({
+        backendVersion,
+        reportRouteStatus: routeStatus,
+        lastCheckedAt: new Date().toISOString()
+      });
+    } catch {
+      setTechnicalHealth({
+        backendVersion,
+        reportRouteStatus: "error",
+        lastCheckedAt: new Date().toISOString()
+      });
+    }
+  };
+
   useEffect(() => {
-    healthCheck()
-      .then(() => setHealthStatus("ok"))
-      .catch(() => setHealthStatus("error"));
+    void refreshTechnicalHealth();
   }, []);
 
   const persistAuth = (nextToken: string, nextUser: User) => {
@@ -555,13 +832,21 @@ export default function App() {
     setStageFollowUpFilter("TODOS");
     setExpandedFollowUpIds([]);
     setWorkProgress(null);
-    setChecklistStage("REQUISITOS_CELEBRACAO");
-    setActiveWorkflowStage("REQUISITOS_CELEBRACAO");
+    setChecklistStage("PROPOSTA");
+    setActiveWorkflowStage(null);
+    setExpandedChecklistAttachmentItemIds([]);
+    setBusyExternalLinkItemId(null);
     setObraPercentual("0");
     setBoletimData(todayDate());
     setBoletimValor(formatCurrencyInput(0));
     setBoletimPercentual("");
     setBoletimObservacao("");
+    setShowRepassePanel(false);
+    setShowWorkProgressPanel(false);
+    setRepasseValorInput(formatCurrencyInput(0));
+    setRepasseDataInput(todayDate());
+    setReportFilters(emptyReportFilters());
+    setReportData(null);
     setEditingId(null);
     setShowCreateInstrumentForm(false);
     setForm(emptyInstrumentForm());
@@ -590,8 +875,12 @@ export default function App() {
     setStageFollowUpModalStage(null);
     setStageFollowUpFilter("TODOS");
     setExpandedFollowUpIds([]);
+    setExpandedChecklistAttachmentItemIds([]);
     setWorkProgress(null);
-    setActiveWorkflowStage("REQUISITOS_CELEBRACAO");
+    setShowRepassePanel(false);
+    setShowWorkProgressPanel(false);
+    setActiveWorkflowStage(null);
+    setBusyExternalLinkItemId(null);
     if (window.location.pathname !== "/") {
       window.history.pushState({}, "", "/");
     }
@@ -600,6 +889,8 @@ export default function App() {
   const navigateToInstrumentProfile = (id: number) => {
     const nextPath = `/instrumentos/${id}`;
     setInstrumentPageId(id);
+    setActiveWorkflowStage(null);
+    setExpandedChecklistAttachmentItemIds([]);
     setActiveView("instrumentos");
     if (window.location.pathname !== nextPath) {
       window.history.pushState({}, "", nextPath);
@@ -660,6 +951,26 @@ export default function App() {
     setConvenetes(items);
   };
 
+  const loadRepasseReport = async (authToken?: string) => {
+    const currentToken = authToken ?? token;
+    if (!currentToken) {
+      return;
+    }
+
+    if (reportFilters.convenete_id.trim() === "") {
+      setReportData(null);
+      return;
+    }
+
+    const report = await getRepasseReport(currentToken, {
+      convenete_id: Number(reportFilters.convenete_id),
+      instrumento_id: reportFilters.instrumento_id.trim() === "" ? undefined : Number(reportFilters.instrumento_id),
+      data_de: reportFilters.data_de || undefined,
+      data_ate: reportFilters.data_ate || undefined
+    });
+    setReportData(report);
+  };
+
   const loadManagedUsers = async (authToken?: string) => {
     const currentToken = authToken ?? token;
     if (!currentToken || !isAdmin) {
@@ -678,7 +989,14 @@ export default function App() {
     }
 
     const data = await getInstrumentChecklist(currentToken, instrumentId);
-    setChecklistItems(data.itens);
+    setChecklistItems(
+      data.itens.map((item) => ({
+        ...item,
+        solicitacao_externa: item.solicitacao_externa ?? null,
+        anexos_externos: item.anexos_externos ?? []
+      }))
+    );
+    setExpandedChecklistAttachmentItemIds([]);
     setChecklistSummary(data.resumo);
   };
 
@@ -736,6 +1054,18 @@ export default function App() {
     }
     void refreshData();
   }, [isAuthenticated, isAdmin]);
+
+  useEffect(() => {
+    if (!token || !isAuthenticated) {
+      return;
+    }
+
+    getMyProfile(token)
+      .then((profile) => {
+        persistAuth(token, profile);
+      })
+      .catch(() => undefined);
+  }, [token, isAuthenticated]);
 
   useEffect(() => {
     const onPopState = () => {
@@ -796,16 +1126,20 @@ export default function App() {
   }, [instrumentPageId, isAuthenticated, token]);
 
   useEffect(() => {
-    if (checklistSummary?.etapa_atual) {
-      setActiveWorkflowStage(checklistSummary.etapa_atual);
+    if (!profileInstrument) {
+      setRepasseValorInput(formatCurrencyInput(0));
+      setRepasseDataInput(todayDate());
+      setEmpresaVencedoraInput("");
       return;
     }
 
-    const firstStageWithItems = WORKFLOW_STAGES.find((stage) => checklistItems.some((item) => item.etapa === stage));
-    if (firstStageWithItems) {
-      setActiveWorkflowStage(firstStageWithItems);
-    }
-  }, [checklistSummary?.etapa_atual, checklistItems]);
+    setRepasseValorInput(formatCurrencyInput(0));
+    setRepasseDataInput(todayDate());
+    setEmpresaVencedoraInput(profileInstrument.orgao_executor ?? "");
+  }, [
+    profileInstrument?.id,
+    profileInstrument?.orgao_executor
+  ]);
 
   useEffect(() => {
     setStageFollowUpText("");
@@ -813,6 +1147,38 @@ export default function App() {
     setStageFollowUpModalStage(null);
     setExpandedFollowUpIds([]);
   }, [activeWorkflowStage]);
+
+  useEffect(() => {
+    if (convenetes.length === 0) {
+      return;
+    }
+
+    setReportFilters((prev) => {
+      if (prev.convenete_id.trim() !== "") {
+        return prev;
+      }
+      return {
+        ...prev,
+        convenete_id: String(convenetes[0].id)
+      };
+    });
+  }, [convenetes]);
+
+  useEffect(() => {
+    if (!isAuthenticated || activeView !== "relatorios") {
+      return;
+    }
+
+    if (reportFilters.convenete_id.trim() === "" || reportData) {
+      return;
+    }
+
+    void onApplyRepasseReportFilters();
+  }, [activeView, isAuthenticated, reportFilters.convenete_id, reportData]);
+
+  const onToggleWorkflowStage = (stage: WorkflowStage) => {
+    setActiveWorkflowStage((prev) => (prev === stage ? null : stage));
+  };
 
   const onAddChecklistItem = async (event: FormEvent) => {
     event.preventDefault();
@@ -880,6 +1246,64 @@ export default function App() {
       setMessage(error instanceof Error ? error.message : "Falha ao atualizar status do checklist.");
     } finally {
       setBusyChecklistItemId(null);
+    }
+  };
+
+  const onGenerateChecklistExternalLink = async (itemId: number) => {
+    if (!token || instrumentPageId === null || !canManageInstruments) {
+      return;
+    }
+
+    setBusyExternalLinkItemId(itemId);
+    setMessage("");
+    try {
+      const created = await createChecklistExternalLink(token, instrumentPageId, itemId, externalLinkValidityDays);
+      await navigator.clipboard.writeText(created.link_publico);
+      await loadChecklist(instrumentPageId);
+      setMessage("Link externo gerado e copiado para a area de transferencia.");
+    } catch (error) {
+      setMessage(error instanceof Error ? error.message : "Falha ao gerar link externo.");
+    } finally {
+      setBusyExternalLinkItemId(null);
+    }
+  };
+
+  const onCopyExternalLink = async (url: string) => {
+    try {
+      await navigator.clipboard.writeText(toAbsoluteUrl(url));
+      setMessage("Link copiado.");
+    } catch {
+      setMessage("Nao foi possivel copiar automaticamente. Copie o link manualmente.");
+    }
+  };
+
+  const onDeactivateChecklistExternalLink = async (itemId: number) => {
+    if (!token || instrumentPageId === null || !canManageInstruments) {
+      return;
+    }
+
+    setBusyExternalLinkItemId(itemId);
+    setMessage("");
+    try {
+      const response = await deactivateChecklistExternalLinkApi(token, instrumentPageId, itemId);
+      await loadChecklist(instrumentPageId);
+      setMessage(response.message);
+    } catch (error) {
+      setMessage(error instanceof Error ? error.message : "Falha ao desativar link externo.");
+    } finally {
+      setBusyExternalLinkItemId(null);
+    }
+  };
+
+  const onDownloadChecklistExternalAttachment = async (itemId: number, fileId: number, name: string) => {
+    if (!token || instrumentPageId === null) {
+      return;
+    }
+
+    try {
+      await downloadChecklistExternalFile(token, instrumentPageId, itemId, fileId, name);
+    } catch (error) {
+      setMessage(error instanceof Error ? error.message : "Falha ao baixar anexo externo.");
     }
   };
 
@@ -972,6 +1396,12 @@ export default function App() {
   const onToggleFollowUpText = (followUpId: number) => {
     setExpandedFollowUpIds((prev) =>
       prev.includes(followUpId) ? prev.filter((id) => id !== followUpId) : [...prev, followUpId]
+    );
+  };
+
+  const onToggleChecklistAttachments = (itemId: number) => {
+    setExpandedChecklistAttachmentItemIds((prev) =>
+      prev.includes(itemId) ? prev.filter((id) => id !== itemId) : [...prev, itemId]
     );
   };
 
@@ -1148,6 +1578,40 @@ export default function App() {
       window.history.pushState({}, "", "/");
     }
     setInstrumentPageId(null);
+  };
+
+  const onApplyRepasseReportFilters = async () => {
+    if (reportFilters.convenete_id.trim() === "") {
+      setMessage("Selecione um convenete para gerar o relatorio.");
+      return;
+    }
+
+    setIsBusy(true);
+    setMessage("");
+    try {
+      await loadRepasseReport();
+      setMessage("Relatorio atualizado com sucesso.");
+    } catch (error) {
+      setMessage(error instanceof Error ? error.message : "Falha ao gerar relatorio de repasses.");
+    } finally {
+      setIsBusy(false);
+    }
+  };
+
+  const onClearRepasseReportFilters = () => {
+    setReportFilters((prev) => ({
+      ...emptyReportFilters(),
+      convenete_id: prev.convenete_id
+    }));
+    setReportData(null);
+  };
+
+  const onExportRepasseReportPdf = (mode: ReportPdfMode) => {
+    if (!reportData) {
+      setMessage("Gere o relatorio antes de exportar.");
+      return;
+    }
+    exportRepasseReportPdf(reportData, mode);
   };
 
   const onStartCreateInstrument = () => {
@@ -1416,6 +1880,130 @@ export default function App() {
       setMessage(error instanceof Error ? error.message : "Falha ao salvar usuario.");
     } finally {
       setIsBusy(false);
+    }
+  };
+
+  const onAddRepasse = async () => {
+    if (!token || instrumentPageId === null || !canManageInstruments || !profileInstrument) {
+      return;
+    }
+
+    const valorRepasse = parseCurrencyInput(repasseValorInput);
+    if (Number.isNaN(valorRepasse) || valorRepasse <= 0) {
+      setMessage("Valor do repasse invalido.");
+      return;
+    }
+
+    if (!repasseDataInput) {
+      setMessage("Informe a data do repasse.");
+      return;
+    }
+
+    setIsBusy(true);
+    setMessage("");
+    try {
+      const updated = await addInstrumentRepasse(token, instrumentPageId, {
+        data_repasse: repasseDataInput,
+        valor_repasse: valorRepasse
+      });
+
+      const updatedWithRepasses = await withLoadedRepasses(token, updated);
+
+      setInstruments((prev) => prev.map((item) => (item.id === updatedWithRepasses.id ? updatedWithRepasses : item)));
+      setSelectedInstrument(updatedWithRepasses);
+      setRepasseValorInput(formatCurrencyInput(0));
+      setRepasseDataInput(todayDate());
+      setMessage("Repasse cadastrado.");
+    } catch (error) {
+      setMessage(error instanceof Error ? error.message : "Falha ao cadastrar repasse.");
+    } finally {
+      setIsBusy(false);
+    }
+  };
+
+  const onDeleteRepasse = async (repasseId: number) => {
+    if (!token || instrumentPageId === null || !canManageInstruments) {
+      return;
+    }
+
+    setIsBusy(true);
+    setMessage("");
+    try {
+      const updated = await deleteInstrumentRepasse(token, instrumentPageId, repasseId);
+      const updatedWithRepasses = await withLoadedRepasses(token, updated);
+      setInstruments((prev) => prev.map((item) => (item.id === updatedWithRepasses.id ? updatedWithRepasses : item)));
+      setSelectedInstrument(updatedWithRepasses);
+      setMessage("Repasse removido.");
+    } catch (error) {
+      setMessage(error instanceof Error ? error.message : "Falha ao remover repasse.");
+    } finally {
+      setIsBusy(false);
+    }
+  };
+
+  const onSaveEmpresaVencedora = async () => {
+    if (!token || !profileInstrument || !canManageInstruments) {
+      return;
+    }
+
+    const valor = empresaVencedoraInput.trim();
+    if (valor === "") {
+      setMessage("Informe nome e CNPJ da empresa vencedora.");
+      return;
+    }
+
+    setIsBusy(true);
+    setMessage("");
+    try {
+      const updated = await updateInstrument(token, profileInstrument.id, {
+        orgao_executor: valor
+      });
+      const updatedWithRepasses = await withLoadedRepasses(token, updated);
+      setInstruments((prev) => prev.map((item) => (item.id === updatedWithRepasses.id ? updatedWithRepasses : item)));
+      setSelectedInstrument(updatedWithRepasses);
+      setMessage("Empresa vencedora salva com sucesso.");
+    } catch (error) {
+      setMessage(error instanceof Error ? error.message : "Falha ao salvar empresa vencedora.");
+    } finally {
+      setIsBusy(false);
+    }
+  };
+
+  const onUploadMyAvatar = async (event: ChangeEvent<HTMLInputElement>) => {
+    const file = event.target.files?.[0];
+    event.target.value = "";
+    if (!file || !token) {
+      return;
+    }
+
+    setIsUploadingAvatar(true);
+    setMessage("");
+    try {
+      const updated = await uploadMyAvatar(token, file);
+      persistAuth(token, updated);
+      setMessage("Avatar atualizado com sucesso.");
+    } catch (error) {
+      setMessage(error instanceof Error ? error.message : "Falha ao atualizar avatar.");
+    } finally {
+      setIsUploadingAvatar(false);
+    }
+  };
+
+  const onRemoveMyAvatar = async () => {
+    if (!token || !user?.avatar_url) {
+      return;
+    }
+
+    setIsUploadingAvatar(true);
+    setMessage("");
+    try {
+      await removeMyAvatar(token);
+      persistAuth(token, { ...user, avatar_url: null });
+      setMessage("Avatar removido com sucesso.");
+    } catch (error) {
+      setMessage(error instanceof Error ? error.message : "Falha ao remover avatar.");
+    } finally {
+      setIsUploadingAvatar(false);
     }
   };
 
@@ -1698,10 +2286,42 @@ export default function App() {
           >
             Auditoria/Historico
           </button>
+          <button
+            type="button"
+            className={activeView === "relatorios" ? "menu-item active" : "menu-item"}
+            onClick={() => onChangeView("relatorios")}
+          >
+            Relatorios
+          </button>
 
           <div className="sidebar-footer">
-            <p>{user?.nome}</p>
-            <p>{user?.role}</p>
+            <div className="user-panel">
+              {user?.avatar_url ? (
+                <img className="user-avatar" src={toAbsoluteUrl(user.avatar_url)} alt={user.nome} />
+              ) : (
+                <div className="user-avatar user-avatar-fallback">{getInitials(user?.nome, user?.email ?? "")}</div>
+              )}
+              <div className="user-panel-info">
+                <p>{user?.nome}</p>
+                <p>{user?.role}</p>
+              </div>
+            </div>
+            <div className="user-panel-actions">
+              <label className="ghost upload-trigger">
+                {isUploadingAvatar ? "Enviando..." : "Alterar avatar"}
+                <input
+                  type="file"
+                  accept="image/png,image/jpeg"
+                  onChange={onUploadMyAvatar}
+                  disabled={isUploadingAvatar}
+                />
+              </label>
+              {user?.avatar_url && (
+                <button type="button" className="ghost" onClick={onRemoveMyAvatar} disabled={isUploadingAvatar}>
+                  Remover avatar
+                </button>
+              )}
+            </div>
             <button type="button" className="ghost" onClick={clearAuth}>
               Sair
             </button>
@@ -1722,7 +2342,9 @@ export default function App() {
                       ? "Cadastro de Convenetes"
                     : activeView === "usuarios"
                       ? "Gestao de Usuarios"
-                    : "Auditoria e Historico"}
+                    : activeView === "auditoria"
+                      ? "Auditoria e Historico"
+                      : "Relatorios Analiticos"}
               </h2>
               <p className="subtitle">
                 {isInstrumentProfileView
@@ -1734,6 +2356,31 @@ export default function App() {
               API: {healthStatus === "checking" ? "verificando" : healthStatus === "ok" ? "online" : "offline"}
             </div>
           </header>
+
+          <section className="card technical-health-card">
+            <div>
+              <h3>Saude tecnica</h3>
+              <p className="subtitle">
+                Backend v{technicalHealth.backendVersion} | Rota relatorios:{" "}
+                {technicalHealth.reportRouteStatus === "ok"
+                  ? "ok"
+                  : technicalHealth.reportRouteStatus === "missing"
+                    ? "nao encontrada"
+                    : technicalHealth.reportRouteStatus === "checking"
+                      ? "verificando"
+                      : "erro"}
+              </p>
+              <p className="subtitle">
+                Ultima verificacao:{" "}
+                {technicalHealth.lastCheckedAt
+                  ? new Date(technicalHealth.lastCheckedAt).toLocaleString("pt-BR")
+                  : "ainda nao verificada"}
+              </p>
+            </div>
+            <button type="button" className="secondary" onClick={refreshTechnicalHealth} disabled={isBusy}>
+              Verificar agora
+            </button>
+          </section>
 
           {activeView === "dashboard" ? (
             <section className="dashboard-grid">
@@ -1874,7 +2521,10 @@ export default function App() {
               </div>
 
               {isInstrumentProfileView ? (
-                <>
+                isEditingProfileInstrument ? (
+                  renderInstrumentForm()
+                ) : (
+                  <>
                   <div className="card profile-card">
                     <div className="profile-header-row">
                       <h3>{profileInstrument ? `Instrumento ${profileInstrument.instrumento}` : "Carregando instrumento"}</h3>
@@ -1882,6 +2532,30 @@ export default function App() {
                         <button type="button" className="ghost" onClick={navigateToInstrumentList}>
                           Voltar para lista
                         </button>
+                        {profileInstrument && (
+                          <button
+                            type="button"
+                            className={`secondary panel-toggle${showRepassePanel ? " active" : ""}`}
+                            onClick={() => {
+                              setShowRepassePanel((prev) => !prev);
+                              setShowWorkProgressPanel(false);
+                            }}
+                          >
+                            Lista de Repasses
+                          </button>
+                        )}
+                        {profileInstrument && (
+                          <button
+                            type="button"
+                            className={`secondary panel-toggle${showWorkProgressPanel ? " active" : ""}`}
+                            onClick={() => {
+                              setShowWorkProgressPanel((prev) => !prev);
+                              setShowRepassePanel(false);
+                            }}
+                          >
+                            Acompanhamento de obras
+                          </button>
+                        )}
                         {canManageInstruments && profileInstrument && (
                           <button type="button" onClick={() => onEdit(profileInstrument)}>
                             Editar
@@ -1939,15 +2613,209 @@ export default function App() {
                         </p>
                         </div>
 
-                        <div className="checklist-card">
+                        {showRepassePanel && (
+                          <div className="repasse-card">
+                            <h3>Lista de Repasses</h3>
+                            <div className="repasse-grid">
+                              <p>
+                                <strong>Valor total do repasse:</strong> {formatCurrency(profileInstrument.valor_repasse)}
+                              </p>
+                              <p>
+                                <strong>Valor contrapartida:</strong> {formatCurrency(profileInstrument.valor_contrapartida)}
+                              </p>
+                              <p>
+                                <strong>Valor ja repassado:</strong> {formatCurrency(profileInstrument.valor_ja_repassado)}
+                              </p>
+                              <p>
+                                <strong>Total de repasses:</strong> {profileInstrumentRepasses.length}
+                              </p>
+                              <p>
+                                <strong>% repassado:</strong> {repassePercentualAtual.toFixed(2)}%
+                              </p>
+                            </div>
+
+                            <div className="repasse-progress" role="presentation">
+                              <span style={{ width: `${repassePercentualAtual}%` }} />
+                            </div>
+
+                            {canManageInstruments && (
+                              <div className="repasse-form">
+                                <input
+                                  type="date"
+                                  value={repasseDataInput}
+                                  onChange={(e) => setRepasseDataInput(e.target.value)}
+                                />
+                                <input
+                                  type="text"
+                                  inputMode="numeric"
+                                  value={repasseValorInput}
+                                  onChange={(e) => setRepasseValorInput(normalizeCurrencyInput(e.target.value))}
+                                  placeholder="Valor do repasse"
+                                />
+                                <button type="button" onClick={onAddRepasse} disabled={isBusy}>
+                                  Adicionar repasse
+                                </button>
+                              </div>
+                            )}
+
+                            <div className="repasse-list">
+                              {profileInstrumentRepasses.length === 0 ? (
+                                <p>Nenhum repasse cadastrado.</p>
+                              ) : (
+                                profileInstrumentRepasses.map((repasse) => (
+                                  <div key={repasse.id} className="repasse-item">
+                                    <span>{repasse.data_repasse}</span>
+                                    <strong>{formatCurrency(repasse.valor_repasse)}</strong>
+                                    {canManageInstruments && (
+                                      <button
+                                        type="button"
+                                        className="ghost"
+                                        onClick={() => onDeleteRepasse(repasse.id)}
+                                        disabled={isBusy}
+                                      >
+                                        Remover
+                                      </button>
+                                    )}
+                                  </div>
+                                ))
+                              )}
+                            </div>
+                          </div>
+                        )}
+
+                        {showWorkProgressPanel && (
+                          <div className="work-progress-card">
+                            <h3>Acompanhamento de obra</h3>
+                            <p className="subtitle">
+                              Empresa vencedora (nome/CNPJ): {profileInstrument.orgao_executor?.trim() || "Nao informada"}
+                            </p>
+                            <p className="subtitle">
+                              Valor ja repassado: {formatCurrency(profileInstrument.valor_ja_repassado)} | Valor total de repasse: {" "}
+                              {formatCurrency(profileInstrument.valor_repasse)}
+                            </p>
+                            <p className="subtitle">
+                              Percentual atual: {workProgress ? `${workProgress.percentual_obra.toFixed(2)}%` : "0.00%"} | Total boletins:{" "}
+                              {formatCurrency(workProgress?.valor_total_boletins ?? 0)}
+                            </p>
+
+                            {canManageInstruments && (
+                              <div className="action-row compact">
+                                <input
+                                  type="number"
+                                  min="0"
+                                  max="100"
+                                  step="0.01"
+                                  value={obraPercentual}
+                                  onChange={(e) => setObraPercentual(e.target.value)}
+                                  placeholder="Percentual da obra"
+                                />
+                                <button type="button" onClick={onSaveWorkProgress} disabled={isBusy}>
+                                  Salvar percentual
+                                </button>
+                              </div>
+                            )}
+
+                            {canManageInstruments && (
+                              <form className="checklist-add-form" onSubmit={onAddMeasurementBulletin}>
+                                <input type="date" value={boletimData} onChange={(e) => setBoletimData(e.target.value)} required />
+                                <input
+                                  type="text"
+                                  inputMode="numeric"
+                                  value={boletimValor}
+                                  onChange={(e) => setBoletimValor(normalizeCurrencyInput(e.target.value))}
+                                  placeholder="Valor do boletim"
+                                  required
+                                />
+                                <input
+                                  type="number"
+                                  min="0"
+                                  max="100"
+                                  step="0.01"
+                                  value={boletimPercentual}
+                                  onChange={(e) => setBoletimPercentual(e.target.value)}
+                                  placeholder="% obra (opcional)"
+                                />
+                                <input
+                                  value={boletimObservacao}
+                                  onChange={(e) => setBoletimObservacao(e.target.value)}
+                                  placeholder="Observacao"
+                                />
+                                <button type="submit" disabled={isBusy}>
+                                  Adicionar boletim
+                                </button>
+                              </form>
+                            )}
+
+                            {workProgress && workProgress.boletins.length > 0 ? (
+                              <div className="table-wrap">
+                                <table>
+                                  <thead>
+                                    <tr>
+                                      <th>Data</th>
+                                      <th>Valor</th>
+                                      <th>% obra</th>
+                                      <th>Observacao</th>
+                                      {canManageInstruments && <th>Acoes</th>}
+                                    </tr>
+                                  </thead>
+                                  <tbody>
+                                    {workProgress.boletins.map((item) => (
+                                      <tr key={item.id}>
+                                        <td>{item.data_boletim}</td>
+                                        <td>{formatCurrency(item.valor_medicao)}</td>
+                                        <td>
+                                          {item.percentual_obra_informado === null ? "-" : `${item.percentual_obra_informado.toFixed(2)}%`}
+                                        </td>
+                                        <td>{item.observacao ?? "-"}</td>
+                                        {canManageInstruments && (
+                                          <td>
+                                            <button
+                                              type="button"
+                                              className="danger"
+                                              onClick={() => onDeleteMeasurementBulletin(item.id)}
+                                            >
+                                              Excluir
+                                            </button>
+                                          </td>
+                                        )}
+                                      </tr>
+                                    ))}
+                                  </tbody>
+                                </table>
+                              </div>
+                            ) : (
+                              <p className="subtitle">Nenhum boletim de medicao cadastrado.</p>
+                            )}
+                          </div>
+                        )}
+
+                        {!showRepassePanel && !showWorkProgressPanel && (
+                          <div className="checklist-card">
                           <div className="checklist-head">
                             <h3>Fluxo de liberacao do recurso federal - {FLOW_TYPE_LABELS[currentFlowType]}</h3>
-                            {checklistSummary && (
-                              <p className="subtitle">
-                                {checklistSummary.concluidos}/{checklistSummary.total} concluidos | obrigatorios: {" "}
-                                {checklistSummary.obrigatorios_concluidos}/{checklistSummary.obrigatorios}
-                              </p>
-                            )}
+                            <div className="checklist-head-meta">
+                              {canManageInstruments && (
+                                <label className="checklist-validity-control">
+                                  Validade do link externo
+                                  <select
+                                    value={String(externalLinkValidityDays)}
+                                    onChange={(e) => setExternalLinkValidityDays(Number(e.target.value))}
+                                  >
+                                    {EXTERNAL_LINK_VALIDITY_OPTIONS.map((days) => (
+                                      <option key={days} value={String(days)}>
+                                        {days} dia{days > 1 ? "s" : ""}
+                                      </option>
+                                    ))}
+                                  </select>
+                                </label>
+                              )}
+                              {checklistSummary && (
+                                <p className="subtitle">
+                                  {checklistSummary.concluidos}/{checklistSummary.total} concluidos | obrigatorios: {" "}
+                                  {checklistSummary.obrigatorios_concluidos}/{checklistSummary.obrigatorios}
+                                </p>
+                              )}
+                            </div>
                           </div>
 
                           {checklistSummary?.etapa_atual && (
@@ -1996,6 +2864,7 @@ export default function App() {
                                 const stageItems = checklistItems.filter((item) => item.etapa === stage);
                                 const stageResume = checklistSummary?.etapas.find((item) => item.etapa === stage);
                                 const isExpanded = activeWorkflowStage === stage;
+                                const isStageDone = Boolean(stageResume?.concluida);
                                 const allFollowUps = stageFollowUps[stage] ?? [];
                                 const visibleFollowUps = filterStageFollowUps(allFollowUps);
                                 const totalAttachments = allFollowUps.reduce((acc, item) => acc + item.arquivos.length, 0);
@@ -2004,12 +2873,14 @@ export default function App() {
                                 return (
                                   <section
                                     key={stage}
-                                    className={isExpanded ? "workflow-stage-section open" : "workflow-stage-section"}
+                                    className={`workflow-stage-section${isExpanded ? " open" : ""}${
+                                      isStageDone ? " done" : ""
+                                    }`}
                                   >
                                     <button
                                       type="button"
                                       className="workflow-accordion-trigger"
-                                      onClick={() => setActiveWorkflowStage(stage)}
+                                      onClick={() => onToggleWorkflowStage(stage)}
                                     >
                                       <div className="workflow-stage-head">
                                         <h4>{stageLabels[stage]}</h4>
@@ -2032,6 +2903,28 @@ export default function App() {
                                           <p className="subtitle">
                                             Obrigatorios: {stageResume.obrigatorios_concluidos}/{stageResume.obrigatorios}
                                           </p>
+                                        )}
+
+                                        {stage === "PROCESSO_EXECUCAO_LICITACAO" && (
+                                          <div className="work-progress-card">
+                                            <h5>Empresa vencedora da licitacao (nome e CNPJ)</h5>
+                                            {canManageInstruments ? (
+                                              <div className="action-row compact">
+                                                <input
+                                                  value={empresaVencedoraInput}
+                                                  onChange={(e) => setEmpresaVencedoraInput(e.target.value)}
+                                                  placeholder="Ex.: Construtora Exemplo LTDA - 12.345.678/0001-90"
+                                                />
+                                                <button type="button" onClick={onSaveEmpresaVencedora} disabled={isBusy}>
+                                                  Salvar empresa
+                                                </button>
+                                              </div>
+                                            ) : (
+                                              <p className="subtitle">
+                                                {profileInstrument?.orgao_executor?.trim() || "Empresa vencedora nao informada."}
+                                              </p>
+                                            )}
+                                          </div>
                                         )}
 
                                         <div className="stage-followup-box">
@@ -2173,14 +3066,29 @@ export default function App() {
                                               visibleFollowUps.map((followUp) => (
                                                 <article key={followUp.id} className="stage-followup-item">
                                                   <div className="stage-followup-item-head">
-                                                    <p className="subtitle">
-                                                      <strong>
-                                                        {followUp.user.nome
-                                                          ? `${followUp.user.nome} (${followUp.user.email})`
-                                                          : followUp.user.email}
-                                                      </strong>{" "}
-                                                      • {new Date(followUp.created_at).toLocaleString("pt-BR")}
-                                                    </p>
+                                                    <div className="stage-followup-user">
+                                                      {followUp.user.avatar_url ? (
+                                                        <img
+                                                          className="followup-avatar"
+                                                          src={toAbsoluteUrl(followUp.user.avatar_url)}
+                                                          alt={followUp.user.nome ?? followUp.user.email}
+                                                        />
+                                                      ) : (
+                                                        <div className="followup-avatar followup-avatar-fallback">
+                                                          {getInitials(followUp.user.nome, followUp.user.email)}
+                                                        </div>
+                                                      )}
+                                                      <div>
+                                                        <p className="stage-followup-user-name">
+                                                          {followUp.user.nome
+                                                            ? `${followUp.user.nome} (${followUp.user.email})`
+                                                            : followUp.user.email}
+                                                        </p>
+                                                        <p className="subtitle">
+                                                          {new Date(followUp.created_at).toLocaleString("pt-BR")}
+                                                        </p>
+                                                      </div>
+                                                    </div>
                                                     <span className="stage-badge">
                                                       {followUp.texto && followUp.arquivos.length > 0
                                                         ? "Texto + anexo"
@@ -2247,22 +3155,117 @@ export default function App() {
                                         ) : (
                                           <div className="checklist-list">
                                             {stageItems.map((item) => {
-                                              const done =
-                                                item.concluido || item.status === "CONCLUIDO" || item.status === "ACEITO";
+                                              const statusVisual = getChecklistStatusVisual(item.status);
+                                              const isPropostaItem = item.etapa === "PROPOSTA";
+                                              const statusOptions = isPropostaItem
+                                                ? PROPOSTA_STATUS_OPTIONS
+                                                : CHECKLIST_STATUS_OPTIONS;
+                                              const statusLabelMap = isPropostaItem
+                                                ? PROPOSTA_STATUS_LABELS
+                                                : CHECKLIST_STATUS_LABELS;
+                                              const hasExternalAttachments = (item.anexos_externos?.length ?? 0) > 0;
+                                              const isAttachmentExpanded = expandedChecklistAttachmentItemIds.includes(item.id);
                                               return (
                                                 <article key={item.id} className="checklist-item">
                                                   <div>
                                                     <p className="checklist-title">
-                                                      <span className={done ? "check-status done" : "check-status"}>
-                                                        {done ? "✓" : "○"}
+                                                      <span className={`check-status ${statusVisual.tone}`}>
+                                                        {statusVisual.icon}
                                                       </span>
                                                       {item.nome_documento}
                                                       {item.obrigatorio && <span className="check-required">Obrigatorio</span>}
                                                     </p>
-                                                    <p className="subtitle">Status: {CHECKLIST_STATUS_LABELS[item.status]}</p>
+                                                    <p className="subtitle">Status: {item.status_label ?? statusLabelMap[item.status]}</p>
                                                     {item.observacao && <p className="subtitle">{item.observacao}</p>}
+                                                    {item.solicitacao_externa && (
+                                                      <div className="external-link-box">
+                                                        <p className="subtitle">
+                                                          Link externo ativo ate {new Date(item.solicitacao_externa.expira_em).toLocaleString("pt-BR")}
+                                                        </p>
+                                                        <div className="action-row compact external-link-row">
+                                                          <input value={toAbsoluteUrl(item.solicitacao_externa.link_publico)} readOnly />
+                                                          <button
+                                                            type="button"
+                                                            className="ghost"
+                                                            onClick={() => onCopyExternalLink(item.solicitacao_externa?.link_publico ?? "")}
+                                                          >
+                                                            Copiar
+                                                          </button>
+                                                        </div>
+                                                      </div>
+                                                    )}
+                                                    {hasExternalAttachments && (
+                                                      <div className="external-files-panel">
+                                                        <button
+                                                          type="button"
+                                                          className="attachment-chip"
+                                                          onClick={() => onToggleChecklistAttachments(item.id)}
+                                                        >
+                                                          {isAttachmentExpanded
+                                                            ? "Ocultar anexos"
+                                                            : `Ver anexos (${item.anexos_externos.length})`}
+                                                        </button>
+                                                        {isAttachmentExpanded && (
+                                                          <div className="external-files-list">
+                                                            {(item.anexos_externos ?? []).map((file) => (
+                                                              <div key={file.id} className="external-file-row">
+                                                                <div>
+                                                                  <p className="external-file-name">{file.nome_original}</p>
+                                                                  <p className="subtitle">
+                                                                    {file.nome_remetente} | {formatFileSize(file.tamanho ?? 0)} |{" "}
+                                                                    {new Date(file.created_at).toLocaleString("pt-BR")}
+                                                                  </p>
+                                                                  <p className="subtitle">
+                                                                    <span
+                                                                      className={`external-link-state ${
+                                                                        getExternalLinkState(file).tone
+                                                                      }`}
+                                                                    >
+                                                                      {getExternalLinkState(file).label}
+                                                                    </span>
+                                                                  </p>
+                                                                </div>
+                                                                <button
+                                                                  type="button"
+                                                                  className="secondary"
+                                                                  onClick={() =>
+                                                                    onDownloadChecklistExternalAttachment(
+                                                                      item.id,
+                                                                      file.id,
+                                                                      file.nome_original
+                                                                    )
+                                                                  }
+                                                                >
+                                                                  Baixar
+                                                                </button>
+                                                              </div>
+                                                            ))}
+                                                          </div>
+                                                        )}
+                                                      </div>
+                                                    )}
                                                   </div>
                                                   <div className="action-row compact checklist-actions">
+                                                    {canManageInstruments && (
+                                                      <button
+                                                        type="button"
+                                                        className="ghost"
+                                                        onClick={() => onGenerateChecklistExternalLink(item.id)}
+                                                        disabled={busyExternalLinkItemId === item.id}
+                                                      >
+                                                        {item.solicitacao_externa ? "Gerar novo link externo" : "Gerar link externo"}
+                                                      </button>
+                                                    )}
+                                                    {canManageInstruments && item.solicitacao_externa && (
+                                                      <button
+                                                        type="button"
+                                                        className="danger"
+                                                        onClick={() => onDeactivateChecklistExternalLink(item.id)}
+                                                        disabled={busyExternalLinkItemId === item.id}
+                                                      >
+                                                        Desativar link externo
+                                                      </button>
+                                                    )}
                                                     {canManageInstruments && (
                                                       <select
                                                         value={item.status}
@@ -2272,11 +3275,11 @@ export default function App() {
                                                             e.target.value as ChecklistItemStatus
                                                           )
                                                         }
-                                                        disabled={busyChecklistItemId === item.id}
+                                                        disabled={busyChecklistItemId === item.id || busyExternalLinkItemId === item.id}
                                                       >
-                                                        {CHECKLIST_STATUS_OPTIONS.map((option) => (
+                                                        {statusOptions.map((option) => (
                                                           <option key={option} value={option}>
-                                                            {CHECKLIST_STATUS_LABELS[option]}
+                                                            {getChecklistStatusOptionLabel(option, statusLabelMap[option])}
                                                           </option>
                                                         ))}
                                                       </select>
@@ -2286,7 +3289,7 @@ export default function App() {
                                                         type="button"
                                                         className="danger"
                                                         onClick={() => onDeleteChecklistItem(item.id)}
-                                                        disabled={busyChecklistItemId === item.id}
+                                                        disabled={busyChecklistItemId === item.id || busyExternalLinkItemId === item.id}
                                                       >
                                                         Excluir item
                                                       </button>
@@ -2322,111 +3325,14 @@ export default function App() {
                             </div>
                           )}
 
-                          <div className="work-progress-card">
-                            <h3>Acompanhamento de obra</h3>
-                            <p className="subtitle">
-                              Percentual atual: {workProgress ? `${workProgress.percentual_obra.toFixed(2)}%` : "0.00%"} | Total
-                              boletins: {formatCurrency(workProgress?.valor_total_boletins ?? 0)}
-                            </p>
-
-                            {canManageInstruments && (
-                              <div className="action-row compact">
-                                <input
-                                  type="number"
-                                  min="0"
-                                  max="100"
-                                  step="0.01"
-                                  value={obraPercentual}
-                                  onChange={(e) => setObraPercentual(e.target.value)}
-                                  placeholder="Percentual da obra"
-                                />
-                                <button type="button" onClick={onSaveWorkProgress} disabled={isBusy}>
-                                  Salvar percentual
-                                </button>
-                              </div>
-                            )}
-
-                            {canManageInstruments && (
-                              <form className="checklist-add-form" onSubmit={onAddMeasurementBulletin}>
-                                <input type="date" value={boletimData} onChange={(e) => setBoletimData(e.target.value)} required />
-                                <input
-                                  type="text"
-                                  inputMode="numeric"
-                                  value={boletimValor}
-                                  onChange={(e) => setBoletimValor(normalizeCurrencyInput(e.target.value))}
-                                  placeholder="Valor do boletim"
-                                  required
-                                />
-                                <input
-                                  type="number"
-                                  min="0"
-                                  max="100"
-                                  step="0.01"
-                                  value={boletimPercentual}
-                                  onChange={(e) => setBoletimPercentual(e.target.value)}
-                                  placeholder="% obra (opcional)"
-                                />
-                                <input
-                                  value={boletimObservacao}
-                                  onChange={(e) => setBoletimObservacao(e.target.value)}
-                                  placeholder="Observacao"
-                                />
-                                <button type="submit" disabled={isBusy}>
-                                  Adicionar boletim
-                                </button>
-                              </form>
-                            )}
-
-                            {workProgress && workProgress.boletins.length > 0 ? (
-                              <div className="table-wrap">
-                                <table>
-                                  <thead>
-                                    <tr>
-                                      <th>Data</th>
-                                      <th>Valor</th>
-                                      <th>% obra</th>
-                                      <th>Observacao</th>
-                                      {canManageInstruments && <th>Acoes</th>}
-                                    </tr>
-                                  </thead>
-                                  <tbody>
-                                    {workProgress.boletins.map((item) => (
-                                      <tr key={item.id}>
-                                        <td>{item.data_boletim}</td>
-                                        <td>{formatCurrency(item.valor_medicao)}</td>
-                                        <td>
-                                          {item.percentual_obra_informado === null
-                                            ? "-"
-                                            : `${item.percentual_obra_informado.toFixed(2)}%`}
-                                        </td>
-                                        <td>{item.observacao ?? "-"}</td>
-                                        {canManageInstruments && (
-                                          <td>
-                                            <button
-                                              type="button"
-                                              className="danger"
-                                              onClick={() => onDeleteMeasurementBulletin(item.id)}
-                                            >
-                                              Excluir
-                                            </button>
-                                          </td>
-                                        )}
-                                      </tr>
-                                    ))}
-                                  </tbody>
-                                </table>
-                              </div>
-                            ) : (
-                              <p className="subtitle">Nenhum boletim de medicao cadastrado.</p>
-                            )}
-                          </div>
                         </div>
+                        )}
                       </>
                     )}
                   </div>
 
-                  {canManageInstruments && profileInstrument && editingId === profileInstrument.id && renderInstrumentForm()}
-                </>
+                  </>
+                )
               ) : (
                 <>
                   {canManageInstruments && showCreateInstrumentForm && renderInstrumentForm()}
@@ -2685,6 +3591,7 @@ export default function App() {
                         <thead>
                           <tr>
                             <th>ID</th>
+                            <th>Avatar</th>
                             <th>Nome</th>
                             <th>E-mail</th>
                             <th>Perfil</th>
@@ -2695,12 +3602,21 @@ export default function App() {
                         <tbody>
                           {managedUsers.length === 0 ? (
                             <tr>
-                              <td colSpan={6}>Nenhum usuario cadastrado.</td>
+                              <td colSpan={7}>Nenhum usuario cadastrado.</td>
                             </tr>
                           ) : (
                             managedUsers.map((item) => (
                               <tr key={item.id}>
                                 <td>{item.id}</td>
+                                <td>
+                                  {item.avatar_url ? (
+                                    <img className="table-avatar" src={toAbsoluteUrl(item.avatar_url)} alt={item.nome} />
+                                  ) : (
+                                    <div className="table-avatar table-avatar-fallback">
+                                      {getInitials(item.nome, item.email)}
+                                    </div>
+                                  )}
+                                </td>
                                 <td>{item.nome}</td>
                                 <td>{item.email}</td>
                                 <td>{item.role}</td>
@@ -2726,7 +3642,7 @@ export default function App() {
                 </div>
               )}
             </section>
-          ) : (
+          ) : activeView === "auditoria" ? (
             <section className="dashboard">
               <div className="card filters-card">
                 <h3>Filtro de auditoria</h3>
@@ -2799,6 +3715,242 @@ export default function App() {
                   </table>
                 </div>
               </div>
+            </section>
+          ) : (
+            <section className="dashboard">
+              <div className="card filters-card">
+                <h3>Relatorio de repasses por convenete</h3>
+                <div className="filters-grid columns-4">
+                  <label>
+                    Convenete *
+                    <select
+                      value={reportFilters.convenete_id}
+                      onChange={(e) =>
+                        setReportFilters((prev) => ({
+                          ...prev,
+                          convenete_id: e.target.value,
+                          instrumento_id: ""
+                        }))
+                      }
+                    >
+                      <option value="">Selecione</option>
+                      {convenetes.map((item) => (
+                        <option key={item.id} value={String(item.id)}>
+                          {item.nome} ({item.cnpj})
+                        </option>
+                      ))}
+                    </select>
+                  </label>
+                  <label>
+                    Instrumento (opcional)
+                    <select
+                      value={reportFilters.instrumento_id}
+                      onChange={(e) => setReportFilters((prev) => ({ ...prev, instrumento_id: e.target.value }))}
+                    >
+                      <option value="">Todos</option>
+                      {reportInstrumentOptions.map((item) => (
+                        <option key={item.id} value={String(item.id)}>
+                          {item.instrumento} | proposta {item.proposta}
+                        </option>
+                      ))}
+                    </select>
+                  </label>
+                  <label>
+                    Data de
+                    <input
+                      type="date"
+                      value={reportFilters.data_de}
+                      onChange={(e) => setReportFilters((prev) => ({ ...prev, data_de: e.target.value }))}
+                    />
+                  </label>
+                  <label>
+                    Data ate
+                    <input
+                      type="date"
+                      value={reportFilters.data_ate}
+                      onChange={(e) => setReportFilters((prev) => ({ ...prev, data_ate: e.target.value }))}
+                    />
+                  </label>
+                </div>
+
+                <div className="action-row">
+                  <button type="button" onClick={onApplyRepasseReportFilters} disabled={isBusy}>
+                    Gerar relatorio
+                  </button>
+                  <button type="button" className="secondary" onClick={onClearRepasseReportFilters}>
+                    Limpar filtros
+                  </button>
+                  <button
+                    type="button"
+                    className="secondary"
+                    onClick={() => reportData && exportRepasseReportCsv(reportData)}
+                    disabled={!reportData}
+                  >
+                    Exportar CSV
+                  </button>
+                  <button
+                    type="button"
+                    className="secondary"
+                    onClick={() => reportData && exportRepasseReportExcel(reportData)}
+                    disabled={!reportData}
+                  >
+                    Exportar Excel
+                  </button>
+                  <button type="button" className="secondary" onClick={() => onExportRepasseReportPdf("executivo")} disabled={!reportData}>
+                    PDF Executivo
+                  </button>
+                  <button type="button" className="secondary" onClick={() => onExportRepasseReportPdf("analitico")} disabled={!reportData}>
+                    PDF Analitico
+                  </button>
+                </div>
+              </div>
+
+              {!reportData ? (
+                <div className="card table-card">
+                  <p>Selecione os filtros e gere o relatorio para visualizar os dados.</p>
+                </div>
+              ) : (
+                <>
+                  <div className="report-kpi-grid">
+                    <div className="card kpi-card">
+                      <p className="eyebrow">Repassado no periodo</p>
+                      <h3>{formatCurrency(reportData.kpis.valor_repassado_periodo)}</h3>
+                    </div>
+                    <div className="card kpi-card">
+                      <p className="eyebrow">Qtd repasses</p>
+                      <h3>{reportData.kpis.quantidade_repasses}</h3>
+                    </div>
+                    <div className="card kpi-card">
+                      <p className="eyebrow">Saldo pactuado</p>
+                      <h3>{formatCurrency(reportData.kpis.saldo_pactuado)}</h3>
+                    </div>
+                    <div className="card kpi-card">
+                      <p className="eyebrow">% repassado</p>
+                      <h3>{reportData.kpis.percentual_repassado.toFixed(2)}%</h3>
+                    </div>
+                  </div>
+
+                  <div className="report-charts-grid">
+                    <div className="card">
+                      <h3>Evolucao mensal de repasses</h3>
+                      <div className="report-bars">
+                        {reportData.series.repasses_mensais.length === 0 ? (
+                          <p className="subtitle">Sem repasses no periodo.</p>
+                        ) : (
+                          reportData.series.repasses_mensais.map((item) => {
+                            const max = Math.max(...reportData.series.repasses_mensais.map((point) => point.valor), 1);
+                            const width = (item.valor / max) * 100;
+                            return (
+                              <div key={item.mes} className="report-bar-row">
+                                <span>{item.mes}</span>
+                                <div className="report-bar-track">
+                                  <div className="report-bar-fill" style={{ width: `${width}%` }} />
+                                </div>
+                                <strong>{formatCurrency(item.valor)}</strong>
+                              </div>
+                            );
+                          })
+                        )}
+                      </div>
+                    </div>
+
+                    <div className="card">
+                      <h3>Repasses por instrumento</h3>
+                      <div className="report-bars">
+                        {reportData.series.repasses_por_instrumento.length === 0 ? (
+                          <p className="subtitle">Sem instrumentos no filtro.</p>
+                        ) : (
+                          reportData.series.repasses_por_instrumento.map((item) => {
+                            const max = Math.max(...reportData.series.repasses_por_instrumento.map((point) => point.valor), 1);
+                            const width = (item.valor / max) * 100;
+                            return (
+                              <div key={item.instrumento_id} className="report-bar-row">
+                                <span>{item.instrumento}</span>
+                                <div className="report-bar-track">
+                                  <div className="report-bar-fill secondary" style={{ width: `${width}%` }} />
+                                </div>
+                                <strong>{formatCurrency(item.valor)}</strong>
+                              </div>
+                            );
+                          })
+                        )}
+                      </div>
+                    </div>
+                  </div>
+
+                  <div className="card table-card">
+                    <h3>Instrumentos no relatorio</h3>
+                    <div className="table-wrap">
+                      <table>
+                        <thead>
+                          <tr>
+                            <th>Instrumento</th>
+                            <th>Status</th>
+                            <th>Empresa vencedora</th>
+                            <th>Valor pactuado</th>
+                            <th>Ja repassado</th>
+                            <th>Saldo</th>
+                            <th>% obra</th>
+                          </tr>
+                        </thead>
+                        <tbody>
+                          {reportData.instrumentos.length === 0 ? (
+                            <tr>
+                              <td colSpan={7}>Nenhum instrumento encontrado.</td>
+                            </tr>
+                          ) : (
+                            reportData.instrumentos.map((item) => (
+                              <tr key={item.id}>
+                                <td>{item.instrumento}</td>
+                                <td>{item.status}</td>
+                                <td>{item.empresa_vencedora ?? "-"}</td>
+                                <td>{formatCurrency(item.valor_pactuado)}</td>
+                                <td>{formatCurrency(item.valor_ja_repassado)}</td>
+                                <td>{formatCurrency(item.saldo_pactuado)}</td>
+                                <td>{item.percentual_obra === null ? "-" : `${item.percentual_obra.toFixed(2)}%`}</td>
+                              </tr>
+                            ))
+                          )}
+                        </tbody>
+                      </table>
+                    </div>
+                  </div>
+
+                  <div className="card table-card">
+                    <h3>Lista de repasses</h3>
+                    <div className="table-wrap">
+                      <table>
+                        <thead>
+                          <tr>
+                            <th>Data</th>
+                            <th>Instrumento</th>
+                            <th>Proposta</th>
+                            <th>Empresa vencedora</th>
+                            <th>Valor</th>
+                          </tr>
+                        </thead>
+                        <tbody>
+                          {reportData.repasses.length === 0 ? (
+                            <tr>
+                              <td colSpan={5}>Nenhum repasse encontrado no periodo.</td>
+                            </tr>
+                          ) : (
+                            reportData.repasses.map((item) => (
+                              <tr key={item.id}>
+                                <td>{item.data_repasse}</td>
+                                <td>{item.instrumento}</td>
+                                <td>{item.proposta}</td>
+                                <td>{item.empresa_vencedora ?? "-"}</td>
+                                <td>{formatCurrency(item.valor_repasse)}</td>
+                              </tr>
+                            ))
+                          )}
+                        </tbody>
+                      </table>
+                    </div>
+                  </div>
+                </>
+              )}
             </section>
           )}
 

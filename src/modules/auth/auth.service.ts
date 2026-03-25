@@ -41,7 +41,8 @@ export const registerUser = async (input: RegisterInput) => {
       id: user.id,
       nome: user.nome,
       email: user.email,
-      role: user.role
+      role: user.role,
+      avatar_url: user.avatarPath ? `/api/v1/usuarios/avatar/${user.id}?v=${user.updatedAt.getTime()}` : null
     },
     token_type: TOKEN_TYPE,
     access_token: accessToken
@@ -72,7 +73,8 @@ export const loginUser = async (input: LoginInput) => {
       id: user.id,
       nome: user.nome,
       email: user.email,
-      role: user.role
+      role: user.role,
+      avatar_url: user.avatarPath ? `/api/v1/usuarios/avatar/${user.id}?v=${user.updatedAt.getTime()}` : null
     },
     token_type: TOKEN_TYPE,
     access_token: accessToken

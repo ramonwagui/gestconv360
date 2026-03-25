@@ -51,3 +51,29 @@ export const updateUser = async (id: number, input: UpdateUserInput) => {
     data
   });
 };
+
+export const updateUserAvatar = async (
+  id: number,
+  payload: {
+    avatarPath: string;
+    avatarMimeType: string;
+  }
+) => {
+  return prisma.user.update({
+    where: { id },
+    data: {
+      avatarPath: payload.avatarPath,
+      avatarMimeType: payload.avatarMimeType
+    }
+  });
+};
+
+export const clearUserAvatar = async (id: number) => {
+  return prisma.user.update({
+    where: { id },
+    data: {
+      avatarPath: null,
+      avatarMimeType: null
+    }
+  });
+};
