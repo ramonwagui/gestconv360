@@ -157,7 +157,22 @@ export const addTicketCommentSchema = z.object({
   mensagem: z.string().trim().min(2).max(2000)
 });
 
+export const ticketChecklistItemIdParamSchema = z.object({
+  id: z.coerce.number().int().positive(),
+  itemId: z.coerce.number().int().positive()
+});
+
+export const toggleTicketChecklistItemSchema = z.object({
+  concluido: z.boolean()
+});
+
+export const associateTicketInstrumentSchema = z.object({
+  instrument_id: z.number().int().positive()
+});
+
 export type TicketListQueryInput = z.infer<typeof ticketListQuerySchema>;
 export type CreateTicketInput = z.infer<typeof createTicketSchema>;
 export type UpdateTicketInput = z.infer<typeof updateTicketSchema>;
 export type AddTicketCommentInput = z.infer<typeof addTicketCommentSchema>;
+export type ToggleTicketChecklistItemInput = z.infer<typeof toggleTicketChecklistItemSchema>;
+export type AssociateTicketInstrumentInput = z.infer<typeof associateTicketInstrumentSchema>;

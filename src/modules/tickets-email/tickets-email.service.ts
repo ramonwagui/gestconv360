@@ -3,7 +3,14 @@ import { gmail_v1, google } from "googleapis";
 
 import { env } from "../../config/env";
 import { prisma } from "../../lib/prisma";
-import { createTicket } from "../tickets/tickets.service";
+import { addTicketChecklistItems, createTicket } from "../tickets/tickets.service";
+import {
+  formatTicketDescriptionWithAI,
+  getChecklistFromSummary,
+  generateTicketSummary,
+  identifyInstrumentWithAI
+} from "./ai-ticket.service";
+import { registrarEmailRecebido } from "../solicitacao-caixa/solicitacao-caixa.service";
 
 type IngestionRunResult = {
   processed: number;
@@ -13,7 +20,51 @@ type IngestionRunResult = {
   skippedAlreadyIngested: number;
 };
 
+type IngestionRunOptions = {
+  reprocessProcessed?: boolean;
+  maxMessages?: number;
+};
+
 const MAX_MESSAGES_PER_RUN = 20;
+
+const upsertIngestionRecord = async (
+  gmailMessageId: string,
+  data: {
+    gmailThreadId?: string | null;
+    fromEmail: string;
+    subject?: string;
+    receivedAt?: Date | null;
+    statusProcessamento: "CRIADO" | "IGNORADO" | "ERRO";
+    erro?: string | null;
+    payloadRaw?: string | null;
+    ticketId?: number | null;
+  }
+) => {
+  await prisma.ticketEmailIngestion.upsert({
+    where: { gmailMessageId },
+    create: {
+      gmailMessageId,
+      gmailThreadId: data.gmailThreadId ?? null,
+      fromEmail: data.fromEmail,
+      subject: data.subject ?? null,
+      receivedAt: data.receivedAt ?? null,
+      statusProcessamento: data.statusProcessamento,
+      erro: data.erro ?? null,
+      payloadRaw: data.payloadRaw ?? null,
+      ticketId: data.ticketId ?? null
+    },
+    update: {
+      gmailThreadId: data.gmailThreadId ?? null,
+      fromEmail: data.fromEmail,
+      subject: data.subject ?? null,
+      receivedAt: data.receivedAt ?? null,
+      statusProcessamento: data.statusProcessamento,
+      erro: data.erro ?? null,
+      payloadRaw: data.payloadRaw ?? null,
+      ticketId: data.ticketId ?? null
+    }
+  });
+};
 
 const getAllowedDomains = () =>
   env.gmailTicketAllowedDomains
@@ -37,8 +88,7 @@ const parseEmailAddress = (raw: string | null | undefined) => {
     return "";
   }
   const match = raw.match(/<([^>]+)>/);
-  const value = (match ? match[1] : raw).trim().toLowerCase();
-  return value;
+  return (match ? match[1] : raw).trim().toLowerCase();
 };
 
 const getHeader = (message: gmail_v1.Schema$Message, headerName: string) => {
@@ -95,13 +145,21 @@ const inferPriority = (subject: string, body: string): TicketPriority => {
 
 const extractInstrumentHint = (subject: string, body: string) => {
   const source = `${subject}\n${body}`;
-  const proposalMatch = source.match(/proposta\s*[:#-]?\s*([A-Za-z0-9./-]+)/i);
-  if (proposalMatch) {
-    return proposalMatch[1];
-  }
-  const instrumentMatch = source.match(/instrumento\s*[:#-]?\s*([A-Za-z0-9./-]+)/i);
-  if (instrumentMatch) {
-    return instrumentMatch[1];
+
+  const patterns = [
+    /proposta\s*[:#-]?\s*([A-Za-z0-9./-]+)/i,
+    /instrumento\s*[:#-]?\s*([A-Za-z0-9./-]+)/i,
+    /n[\u00BAo\u00B0.]\s*(?:proposta|instrumento)\s*[:#-]?\s*([A-Za-z0-9./-]+)/i,
+    /(?:proposta|instrumento)\s+n[\u00BAo\u00B0.]\s*[:#-]?\s*([A-Za-z0-9./-]+)/i,
+    /\b(P\d{4,})\b/i,
+    /\b(INST[-.]?\d{4,})\b/i
+  ];
+
+  for (const pattern of patterns) {
+    const match = source.match(pattern);
+    if (match) {
+      return match[1];
+    }
   }
   return null;
 };
@@ -155,6 +213,29 @@ const findInstrumentIdByHint = async (hint: string | null) => {
   return partial?.id ?? null;
 };
 
+const findInstrumentIdByAI = async (subject: string, body: string) => {
+  const aiHint = await identifyInstrumentWithAI(subject, body);
+  if (!aiHint) {
+    return null;
+  }
+
+  if (aiHint.proposta) {
+    const byProposta = await findInstrumentIdByHint(aiHint.proposta);
+    if (byProposta) {
+      return byProposta;
+    }
+  }
+
+  if (aiHint.instrumento) {
+    const byInstrumento = await findInstrumentIdByHint(aiHint.instrumento);
+    if (byInstrumento) {
+      return byInstrumento;
+    }
+  }
+
+  return null;
+};
+
 const isAllowedSender = (fromEmail: string) => {
   const domains = getAllowedDomains();
   if (domains.length === 0) {
@@ -166,7 +247,7 @@ const isAllowedSender = (fromEmail: string) => {
 
 const makeTicketDescription = (fromEmail: string, subject: string, body: string, receivedAt: Date | null) => {
   const lines = [
-    `Origem: EMAIL`,
+    "Origem: EMAIL",
     `Remetente: ${fromEmail}`,
     `Assunto: ${subject || "(sem assunto)"}`,
     `Recebido em: ${receivedAt ? receivedAt.toISOString() : "desconhecido"}`,
@@ -179,13 +260,15 @@ const makeTicketDescription = (fromEmail: string, subject: string, body: string,
 const processMessage = async (
   gmail: gmail_v1.Gmail,
   messageId: string,
-  systemUserId: number
+  systemUserId: number,
+  options?: IngestionRunOptions
 ): Promise<"created" | "ignored" | "error" | "skipped"> => {
+  const allowReprocess = options?.reprocessProcessed === true;
   const already = await prisma.ticketEmailIngestion.findUnique({
     where: { gmailMessageId: messageId },
     select: { id: true }
   });
-  if (already) {
+  if (already && !allowReprocess) {
     return "skipped";
   }
 
@@ -206,31 +289,49 @@ const processMessage = async (
     });
 
     if (!isAllowedSender(fromEmail)) {
-      await prisma.ticketEmailIngestion.create({
-        data: {
-          gmailMessageId: messageId,
-          gmailThreadId: full.data.threadId ?? null,
-          fromEmail,
-          subject,
-          receivedAt,
-          statusProcessamento: "IGNORADO",
-          erro: "Remetente fora da allowlist de dominios.",
-          payloadRaw
-        }
+      await upsertIngestionRecord(messageId, {
+        gmailThreadId: full.data.threadId ?? null,
+        fromEmail,
+        subject,
+        receivedAt,
+        statusProcessamento: "IGNORADO",
+        erro: "Remetente fora da allowlist de dominios.",
+        payloadRaw
       });
       return "ignored";
     }
 
-    const hint = extractInstrumentHint(subject, bodyText);
-    const instrumentId = await findInstrumentIdByHint(hint);
+    const regexHint = extractInstrumentHint(subject, bodyText);
+    let instrumentId = await findInstrumentIdByHint(regexHint);
+
+    if (!instrumentId) {
+      instrumentId = await findInstrumentIdByAI(subject, bodyText);
+    }
+
+    let descricao = makeTicketDescription(fromEmail, subject, bodyText, receivedAt);
+    let checklistItems: string[] = [];
+    if (env.aiTicketSummaryEnabled) {
+      const summary = await generateTicketSummary(subject, bodyText, fromEmail);
+      if (summary) {
+        descricao = formatTicketDescriptionWithAI(summary, fromEmail, subject, receivedAt);
+        checklistItems = getChecklistFromSummary(summary);
+        if (!instrumentId && summary.instrumento_identificado) {
+          const bySummary = await findInstrumentIdByHint(summary.instrumento_identificado);
+          if (bySummary) {
+            instrumentId = bySummary;
+          }
+        }
+      }
+    }
+
     const created = await createTicket(
       {
         titulo: subject.trim() || "Ticket aberto por email",
-        descricao: makeTicketDescription(fromEmail, subject, bodyText, receivedAt),
+        descricao,
         status: TicketStatus.ABERTO,
         prioridade: inferPriority(subject, bodyText),
         instrument_id: instrumentId ?? undefined,
-        instrumento_informado: instrumentId ? undefined : hint ?? undefined
+        instrumento_informado: instrumentId ? undefined : regexHint ?? undefined
       },
       {
         createdByUserId: systemUserId,
@@ -238,34 +339,36 @@ const processMessage = async (
       }
     );
 
-    await prisma.ticketEmailIngestion.create({
-      data: {
-        gmailMessageId: messageId,
-        gmailThreadId: full.data.threadId ?? null,
-        fromEmail,
-        subject,
-        receivedAt,
-        statusProcessamento: "CRIADO",
-        payloadRaw,
-        ticketId: created.id
-      }
+    if (checklistItems.length > 0) {
+      await addTicketChecklistItems(created.id, checklistItems);
+    }
+
+    if (instrumentId) {
+      await registrarEmailRecebido(instrumentId, fromEmail, subject, created.id);
+    }
+
+    await upsertIngestionRecord(messageId, {
+      gmailThreadId: full.data.threadId ?? null,
+      fromEmail,
+      subject,
+      receivedAt,
+      statusProcessamento: "CRIADO",
+      payloadRaw,
+      ticketId: created.id
     });
 
     return "created";
   } catch (error) {
-    await prisma.ticketEmailIngestion.create({
-      data: {
-        gmailMessageId: messageId,
-        fromEmail: "desconhecido",
-        statusProcessamento: "ERRO",
-        erro: error instanceof Error ? error.message.slice(0, 500) : "Erro desconhecido"
-      }
+    await upsertIngestionRecord(messageId, {
+      fromEmail: "desconhecido",
+      statusProcessamento: "ERRO",
+      erro: error instanceof Error ? error.message.slice(0, 500) : "Erro desconhecido"
     });
     return "error";
   }
 };
 
-export const runGmailTicketIngestion = async (): Promise<IngestionRunResult> => {
+export const runGmailTicketIngestion = async (options?: IngestionRunOptions): Promise<IngestionRunResult> => {
   if (!env.gmailTicketIngestionEnabled) {
     return { processed: 0, created: 0, ignored: 0, errors: 0, skippedAlreadyIngested: 0 };
   }
@@ -278,7 +381,10 @@ export const runGmailTicketIngestion = async (): Promise<IngestionRunResult> => 
   const listed = await gmail.users.messages.list({
     userId: env.gmailUserEmail,
     q: env.gmailTicketQuery,
-    maxResults: MAX_MESSAGES_PER_RUN
+    maxResults:
+      options?.maxMessages && Number.isFinite(options.maxMessages)
+        ? Math.max(1, Math.min(100, options.maxMessages))
+        : MAX_MESSAGES_PER_RUN
   });
 
   const messages = listed.data.messages ?? [];
@@ -294,7 +400,7 @@ export const runGmailTicketIngestion = async (): Promise<IngestionRunResult> => 
     if (!item.id) {
       continue;
     }
-    const status = await processMessage(gmail, item.id, systemUserId);
+    const status = await processMessage(gmail, item.id, systemUserId, options);
     if (status === "created") {
       result.created += 1;
     } else if (status === "ignored") {

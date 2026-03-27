@@ -1,6 +1,7 @@
 import { Prisma, TicketSource, TicketStatus } from "@prisma/client";
 
 import { prisma } from "../../lib/prisma";
+import { registrarAssociacaoManual, registrarComentario } from "../solicitacao-caixa/solicitacao-caixa.service";
 import {
   AddTicketCommentInput,
   CreateTicketInput,
@@ -130,6 +131,18 @@ export const listTickets = async (query: TicketListQueryInput) => {
           email: true,
           role: true
         }
+      },
+      checklistItems: {
+        select: {
+          id: true,
+          descricao: true,
+          concluido: true,
+          concluidoEm: true,
+          ordem: true,
+          createdAt: true,
+          updatedAt: true
+        },
+        orderBy: [{ ordem: "asc" }, { id: "asc" }]
       }
     },
     orderBy: [{ updatedAt: "desc" }, { id: "desc" }]
@@ -177,7 +190,65 @@ export const getTicketById = async (id: number) => {
           }
         },
         orderBy: [{ createdAt: "asc" }, { id: "asc" }]
+      },
+      checklistItems: {
+        select: {
+          id: true,
+          descricao: true,
+          concluido: true,
+          concluidoEm: true,
+          ordem: true,
+          createdAt: true,
+          updatedAt: true
+        },
+        orderBy: [{ ordem: "asc" }, { id: "asc" }]
       }
+    }
+  });
+};
+
+export const addTicketChecklistItems = async (ticketId: number, items: string[]) => {
+  const normalized = items
+    .map((item) => item.trim())
+    .filter((item) => item.length >= 3)
+    .slice(0, 20);
+
+  if (normalized.length === 0) {
+    return [];
+  }
+
+  await prisma.ticketChecklistItem.createMany({
+    data: normalized.map((descricao, index) => ({
+      ticketId,
+      descricao,
+      ordem: index
+    }))
+  });
+
+  return prisma.ticketChecklistItem.findMany({
+    where: { ticketId },
+    orderBy: [{ ordem: "asc" }, { id: "asc" }]
+  });
+};
+
+export const toggleTicketChecklistItem = async (ticketId: number, itemId: number, concluido: boolean) => {
+  const existing = await prisma.ticketChecklistItem.findFirst({
+    where: {
+      id: itemId,
+      ticketId
+    },
+    select: { id: true }
+  });
+
+  if (!existing) {
+    throw new Error("TICKET_CHECKLIST_ITEM_NOT_FOUND");
+  }
+
+  return prisma.ticketChecklistItem.update({
+    where: { id: itemId },
+    data: {
+      concluido,
+      concluidoEm: concluido ? new Date() : null
     }
   });
 };
@@ -281,11 +352,42 @@ export const addTicketComment = async (
     userId: number;
   }
 ) => {
-  return prisma.ticketComment.create({
+  const comment = await prisma.ticketComment.create({
     data: {
       ticketId: id,
       userId: payload.userId,
       mensagem: input.mensagem
     }
   });
+
+  if (payload.userId) {
+    await registrarComentario(id, input.mensagem);
+  }
+
+  return comment;
+};
+
+export const associateTicketToInstrument = async (ticketId: number, instrumentId: number) => {
+  const instrument = await prisma.instrumentProposal.findUnique({
+    where: { id: instrumentId },
+    select: { proposta: true, instrumento: true }
+  });
+
+  if (!instrument) {
+    throw new Error("INSTRUMENT_NOT_FOUND");
+  }
+
+  const instrumentoDescricao = instrument.proposta || instrument.instrumento || `Instrumento #${instrumentId}`;
+
+  await prisma.ticket.update({
+    where: { id: ticketId },
+    data: {
+      instrumentId,
+      instrumentoEncontrado: true
+    }
+  });
+
+  const solicitacao = await registrarAssociacaoManual(instrumentId, ticketId, instrumentoDescricao);
+
+  return { solicitacao };
 };

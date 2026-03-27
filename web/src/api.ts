@@ -9,6 +9,8 @@ import type {
   ChecklistResponse,
   Convenete,
   ConvenetePayload,
+  DocumentQaResponse,
+  DocumentSearchResponse,
   DeadlineAlertResponse,
   InstrumentFilters,
   InstrumentStatus,
@@ -82,10 +84,16 @@ const request = async <T>(
     ...(init.headers ?? {})
   };
 
-  const res = await fetch(buildUrl(path, params), {
-    ...init,
-    headers
-  });
+  let res: Response;
+  try {
+    res = await fetch(buildUrl(path, params), {
+      ...init,
+      headers
+    });
+  } catch (error) {
+    console.error("[api] Network error", { path, method: init.method ?? "GET", error });
+    throw error;
+  }
 
   if (!res.ok) {
     const normalizedHeaders = headers as Record<string, string | undefined>;
@@ -736,6 +744,15 @@ export const addTicketComment = (token: string, id: number, mensagem: string) =>
     body: JSON.stringify({ mensagem })
   });
 
+export const toggleTicketChecklistItem = (token: string, ticketId: number, itemId: number, concluido: boolean) =>
+  request<Ticket>(`/api/v1/tickets/${ticketId}/checklist/${itemId}`, {
+    method: "PATCH",
+    headers: {
+      Authorization: `Bearer ${token}`
+    },
+    body: JSON.stringify({ concluido })
+  });
+
 export const listTicketAssignableUsers = (token: string) =>
   request<{ itens: Array<{ id: number; nome: string; email: string; role: Role }> }>(
     "/api/v1/tickets/assignable-users",
@@ -745,3 +762,292 @@ export const listTicketAssignableUsers = (token: string) =>
       }
     }
   );
+
+export const associateTicketInstrument = (token: string, ticketId: number, instrumentId: number) =>
+  request<{ success: boolean; ticket: Ticket; solicitacaoCaixa: unknown }>(
+    `/api/v1/tickets/${ticketId}/instrumento`,
+    {
+      method: "PATCH",
+      headers: {
+        Authorization: `Bearer ${token}`
+      },
+      body: JSON.stringify({ instrument_id: instrumentId })
+    }
+  );
+
+export type SolicitacaoCaixaItem = {
+  id: number;
+  tipo: "EMAIL_RECEBIDO" | "COMENTARIO_TICKET" | "RESPOTA_ENVIADA" | "ASSOCIAÇÃO_MANUAL";
+  descricao: string;
+  origem_email: string | null;
+  assunto_email: string | null;
+  created_at: string;
+  ticket: { id: number; codigo: string; titulo: string } | null;
+};
+
+export const listSolicitacoesCaixa = (token: string, instrumentId: number, options?: { tipo?: string; limit?: number; offset?: number }) => {
+  const params: Record<string, string> = {};
+  if (options?.tipo) params.tipo = options.tipo;
+  if (options?.limit) params.limit = String(options.limit);
+  if (options?.offset) params.offset = String(options.offset);
+  return request<{ itens: SolicitacaoCaixaItem[]; total: number }>(
+    `/api/v1/solicitacoes-caixa/instrumentos/${instrumentId}/solicitacoes`,
+    {
+      headers: { Authorization: `Bearer ${token}` },
+      ...(Object.keys(params).length > 0 ? { params } : {})
+    }
+  );
+};
+
+export type InstrumentoSearchItem = {
+  id: number;
+  label: string;
+  proposta: string | null;
+  instrumento: string | null;
+  objeto: string | null;
+};
+
+export const searchInstrumentos = (token: string, q: string) =>
+  request<InstrumentoSearchItem[]>(`/api/v1/solicitacoes-caixa/instrumentos/search?q=${encodeURIComponent(q)}`, {
+    headers: { Authorization: `Bearer ${token}` }
+  });
+
+export type CertificateItem = {
+  id: number;
+  nome: string;
+  titular: string;
+  cpf: string;
+  validade: string;
+  status: "ATIVO" | "EXPIRADO" | "REVOGADO";
+  createdAt: string;
+  criado_por: { id: number; nome: string; email: string };
+};
+
+export const createCertificate = (
+  token: string,
+  payload: {
+    nome: string;
+    titular: string;
+    cpf: string;
+    validade: string;
+    arquivo: string;
+    senha: string;
+  }
+) =>
+  request<CertificateItem>("/api/v1/certificates", {
+    method: "POST",
+    headers: { Authorization: `Bearer ${token}` },
+    body: JSON.stringify(payload)
+  });
+
+export const listCertificates = (token: string, options?: { status?: string; limit?: number; offset?: number }) => {
+  const params: Record<string, string> = {};
+  if (options?.status) params.status = options.status;
+  if (options?.limit) params.limit = String(options.limit);
+  if (options?.offset) params.offset = String(options.offset);
+  return request<{ certificados: CertificateItem[]; total: number }>("/api/v1/certificates", {
+    headers: { Authorization: `Bearer ${token}` },
+    ...(Object.keys(params).length > 0 ? { params } : {})
+  });
+};
+
+export const getActiveCertificates = (token: string) =>
+  request<{ id: number; nome: string; titular: string; cpf: string; validade: string }[]>(
+    "/api/v1/certificates/ativos",
+    { headers: { Authorization: `Bearer ${token}` } }
+  );
+
+export const getCertificateById = (token: string, id: number) =>
+  request<any>(`/api/v1/certificates/${id}`, {
+    headers: { Authorization: `Bearer ${token}` }
+  });
+
+export const revokeCertificate = (token: string, id: number) =>
+  request<{ id: number; status: string }>(`/api/v1/certificates/${id}/revogar`, {
+    method: "PATCH",
+    headers: { Authorization: `Bearer ${token}` }
+  });
+
+export type DocumentItem = {
+  id: number;
+  titulo: string;
+  descricao: string | null;
+  arquivoNome: string;
+  status: "PENDENTE" | "ASSINADO" | "CANCELADO";
+  indexStatus?: "PENDENTE" | "PROCESSANDO" | "INDEXADO" | "ERRO";
+  indexedAt?: string | null;
+  indexError?: string | null;
+  aiSummary?: string | null;
+  aiKeywords?: string | null;
+  aiCategory?: "CONTRATO" | "OFICIO" | "RELATORIO" | "PRESTACAO_CONTAS" | "COMPROVANTE" | "OUTROS" | null;
+  aiRiskLevel?: "BAIXO" | "MEDIO" | "ALTO" | "CRITICO" | null;
+  aiClassificationConfidence?: number | null;
+  aiInsights?: string | null;
+  createdAt: string;
+  criado_por: { id: number; nome: string; email: string };
+  assinaturas: any[];
+};
+
+export const createDocument = (
+  token: string,
+  payload: { titulo: string; descricao?: string; arquivo: File; arquivo_nome?: string }
+) => {
+  const formData = new FormData();
+  formData.append("titulo", payload.titulo);
+  if (payload.descricao?.trim()) {
+    formData.append("descricao", payload.descricao.trim());
+  }
+  formData.append("arquivo", payload.arquivo);
+  if (payload.arquivo_nome?.trim()) {
+    formData.append("arquivo_nome", payload.arquivo_nome.trim());
+  }
+
+  return request<DocumentItem>("/api/v1/documents", {
+    method: "POST",
+    headers: { Authorization: `Bearer ${token}` },
+    body: formData
+  });
+};
+
+export const listDocuments = (token: string, options?: { status?: string; limit?: number; offset?: number }) => {
+  const params: Record<string, string> = {};
+  if (options?.status) params.status = options.status;
+  if (options?.limit) params.limit = String(options.limit);
+  if (options?.offset) params.offset = String(options.offset);
+  return request<{ documentos: DocumentItem[]; total: number }>("/api/v1/documents", {
+    headers: { Authorization: `Bearer ${token}` }
+  }, params);
+};
+
+export const searchDocuments = (
+  token: string,
+  query: {
+    q: string;
+    status?: "PENDENTE" | "ASSINADO" | "CANCELADO";
+    created_by_user_id?: number;
+    data_de?: string;
+    data_ate?: string;
+    limit?: number;
+  }
+) =>
+  request<DocumentSearchResponse>(
+    "/api/v1/documents/search",
+    {
+      headers: { Authorization: `Bearer ${token}` }
+    },
+    {
+      q: query.q,
+      status: query.status ?? "",
+      created_by_user_id: query.created_by_user_id ? String(query.created_by_user_id) : "",
+      data_de: query.data_de ?? "",
+      data_ate: query.data_ate ?? "",
+      limit: query.limit ? String(query.limit) : ""
+    }
+  );
+
+export const searchDocumentsSemantic = (
+  token: string,
+  query: {
+    q: string;
+    status?: "PENDENTE" | "ASSINADO" | "CANCELADO";
+    created_by_user_id?: number;
+    data_de?: string;
+    data_ate?: string;
+    limit?: number;
+  }
+) =>
+  request<DocumentSearchResponse>(
+    "/api/v1/documents/search-semantic",
+    {
+      headers: { Authorization: `Bearer ${token}` }
+    },
+    {
+      q: query.q,
+      status: query.status ?? "",
+      created_by_user_id: query.created_by_user_id ? String(query.created_by_user_id) : "",
+      data_de: query.data_de ?? "",
+      data_ate: query.data_ate ?? "",
+      limit: query.limit ? String(query.limit) : ""
+    }
+  );
+
+export const reindexDocument = (token: string, id: number) =>
+  request<{ message: string }>(`/api/v1/documents/${id}/reindex`, {
+    method: "POST",
+    headers: { Authorization: `Bearer ${token}` }
+  });
+
+export const askDocumentQuestion = (token: string, id: number, pergunta: string) =>
+  request<DocumentQaResponse>(`/api/v1/documents/${id}/ask`, {
+    method: "POST",
+    headers: { Authorization: `Bearer ${token}` },
+    body: JSON.stringify({ pergunta })
+  });
+
+export const applyDocumentOcrText = (token: string, id: number, texto: string) =>
+  request<{ message: string }>(`/api/v1/documents/${id}/ocr-text`, {
+    method: "POST",
+    headers: { Authorization: `Bearer ${token}` },
+    body: JSON.stringify({ texto })
+  });
+
+export const classifyDocument = (token: string, id: number) =>
+  request<{ message: string }>(`/api/v1/documents/${id}/classify`, {
+    method: "POST",
+    headers: { Authorization: `Bearer ${token}` }
+  });
+
+export const getPendingDocuments = (token: string) =>
+  request<{ id: number; titulo: string; arquivoNome: string; createdAt: string; createdByUser: { id: number; nome: string } }[]>(
+    "/api/v1/documents/pendentes",
+    { headers: { Authorization: `Bearer ${token}` } }
+  );
+
+export const getDocumentById = (token: string, id: number) =>
+  request<DocumentItem>(`/api/v1/documents/${id}`, {
+    headers: { Authorization: `Bearer ${token}` }
+  });
+
+export const deleteDocument = (token: string, id: number) =>
+  request<{ message: string }>(`/api/v1/documents/${id}`, {
+    method: "DELETE",
+    headers: { Authorization: `Bearer ${token}` }
+  });
+
+export const signDocument = (
+  token: string,
+  payload: { document_id: number; certificate_id: number; senha: string }
+) =>
+  request<{ message: string; signature_id: number; assinado_em: string }>("/api/v1/signature/sign", {
+    method: "POST",
+    headers: { Authorization: `Bearer ${token}` },
+    body: JSON.stringify(payload)
+  });
+
+export const getDocumentSignatureHistory = (token: string, documentId: number) =>
+  request<any[]>(`/api/v1/signature/documento/${documentId}/historico`, {
+    headers: { Authorization: `Bearer ${token}` }
+  });
+
+export const downloadDocument = async (token: string, id: number, fallbackName = "documento.pdf") => {
+  const res = await fetch(buildUrl(`/api/v1/documents/${id}/download`), {
+    headers: {
+      Authorization: `Bearer ${token}`
+    }
+  });
+
+  if (!res.ok) {
+    throw new Error(await getErrorMessage(res));
+  }
+
+  const blob = await res.blob();
+  const url = URL.createObjectURL(blob);
+  const link = document.createElement("a");
+  link.href = url;
+  link.download = fallbackName;
+  link.style.display = "none";
+  document.body.appendChild(link);
+  link.click();
+  document.body.removeChild(link);
+  URL.revokeObjectURL(url);
+};

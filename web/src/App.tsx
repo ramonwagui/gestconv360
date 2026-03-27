@@ -1,24 +1,32 @@
-import { ChangeEvent, DragEvent, FormEvent, useEffect, useMemo, useState } from "react";
+import { ChangeEvent, DragEvent, FormEvent, useEffect, useMemo, useRef, useState } from "react";
 
 import {
+  askDocumentQuestion,
+  addTicketComment,
   addWorkMeasurementBulletin,
   addInstrumentRepasse,
   addChecklistItem,
-  addTicketComment,
+  associateTicketInstrument,
   createUserAdmin,
   seedDemoDataAdmin,
   createChecklistExternalLink,
   deactivateChecklistExternalLink as deactivateChecklistExternalLinkApi,
   createConvenete,
-  createInstrument,
+  createCertificate,
+  classifyDocument,
+  createDocument,
   createTicket,
+  createInstrument,
   deleteWorkMeasurementBulletin,
   deleteInstrumentRepasse,
   deleteConvenete,
+  deleteDocument,
   deactivateInstrument,
   deleteChecklistItem,
   downloadChecklistExternalFile,
+  downloadDocument,
   downloadStageFollowUpFile,
+  getActiveCertificates,
   getInstrumentById,
   getInstrumentChecklist,
   getMyProfile,
@@ -28,6 +36,7 @@ import {
   getWorkProgress,
   healthCheck,
   listAuditLogs,
+  listDocuments,
   listConvenetes,
   listDeadlineAlerts,
   listInstruments,
@@ -35,10 +44,18 @@ import {
   listTicketAssignableUsers,
   listTickets,
   listUsersAdmin,
+  listSolicitacoesCaixa,
+  listCertificates,
   login,
   removeMyAvatar,
   createStageFollowUp,
   listStageFollowUps,
+  revokeCertificate,
+  reindexDocument,
+  searchDocuments,
+  searchDocumentsSemantic,
+  searchInstrumentos,
+  signDocument,
   updateUserAdmin,
   updateChecklistItem,
   updateConvenete,
@@ -56,6 +73,7 @@ import type {
   Convenete,
   ConvenetePayload,
   DeadlineAlertItem,
+  DocumentSearchResult,
   Instrument,
   InstrumentFlowType,
   InstrumentFilters,
@@ -107,6 +125,29 @@ const TICKET_PRIORITY_LABELS: Record<TicketPriority, string> = {
   MEDIA: "Media",
   ALTA: "Alta",
   CRITICA: "Critica"
+};
+
+const DOCUMENT_INDEX_STATUS_LABELS: Record<"PENDENTE" | "PROCESSANDO" | "INDEXADO" | "ERRO", string> = {
+  PENDENTE: "Pendente",
+  PROCESSANDO: "Processando",
+  INDEXADO: "Indexado",
+  ERRO: "Erro"
+};
+
+const DOCUMENT_AI_CATEGORY_LABELS: Record<"CONTRATO" | "OFICIO" | "RELATORIO" | "PRESTACAO_CONTAS" | "COMPROVANTE" | "OUTROS", string> = {
+  CONTRATO: "Contrato",
+  OFICIO: "Oficio",
+  RELATORIO: "Relatorio",
+  PRESTACAO_CONTAS: "Prestacao de contas",
+  COMPROVANTE: "Comprovante",
+  OUTROS: "Outros"
+};
+
+const DOCUMENT_AI_RISK_LABELS: Record<"BAIXO" | "MEDIO" | "ALTO" | "CRITICO", string> = {
+  BAIXO: "Baixo",
+  MEDIO: "Medio",
+  ALTO: "Alto",
+  CRITICO: "Critico"
 };
 
 const FLOW_TYPE_OPTIONS: InstrumentFlowType[] = ["OBRA", "AQUISICAO_EQUIPAMENTOS", "EVENTOS"];
@@ -195,7 +236,7 @@ const emptyStageFollowUps = (): Record<WorkflowStage, StageFollowUp[]> => ({
   ACOMPANHAMENTO_OBRA: []
 });
 
-type MenuView = "dashboard" | "instrumentos" | "convenetes" | "usuarios" | "auditoria" | "tickets" | "relatorios";
+type MenuView = "dashboard" | "instrumentos" | "convenetes" | "usuarios" | "auditoria" | "tickets" | "relatorios" | "assinaturas";
 type StageFollowUpFilter = "TODOS" | "SO_MEUS" | "COM_ANEXO" | "COM_TEXTO";
 type ReportPdfMode = "executivo" | "analitico";
 
@@ -215,8 +256,9 @@ type ObraReportFilters = {
   data_ate: string;
 };
 
-type RelatorioTab = "repasses" | "obras";
+type RelatorioTab = "repasses" | "obras" | "tickets";
 type TicketBoardTab = "abertos" | "resolvidos" | "cancelados";
+type SignatureTab = "certificados" | "documentos";
 
 type TicketFilters = {
   status: TicketStatus | "";
@@ -226,6 +268,17 @@ type TicketFilters = {
   instrument_id: string;
   responsavel_user_id: string;
   q: string;
+};
+
+type TicketReportFilters = {
+  status: TicketStatus | "";
+  prioridade: TicketPriority | "";
+  origem: TicketSource | "";
+  responsavel_user_id: string;
+  somente_atrasados: boolean;
+  q: string;
+  data_de: string;
+  data_ate: string;
 };
 
 type TechnicalRouteStatus = "checking" | "ok" | "missing" | "error";
@@ -307,6 +360,17 @@ const formatFileSize = (size: number) => {
   return `${(kb / 1024).toFixed(1)} MB`;
 };
 
+const readTicketIdFromSearch = (search: string): number | null => {
+  const params = new URLSearchParams(search);
+  const raw = params.get("ticket");
+  if (!raw) {
+    return null;
+  }
+
+  const id = Number(raw);
+  return Number.isInteger(id) && id > 0 ? id : null;
+};
+
 const parseDateOnly = (value: string) => {
   if (!/^\d{4}-\d{2}-\d{2}$/.test(value)) {
     return null;
@@ -359,6 +423,24 @@ const formatTicketSla = (ticket: Ticket) => {
     return "Vence hoje";
   }
   return `Vence em ${diffDays} dia(s)`;
+};
+
+const isTicketOverdue = (ticket: Ticket) => {
+  if (!ticket.prazo_alvo) {
+    return false;
+  }
+  if (ticket.status !== "ABERTO" && ticket.status !== "EM_ANDAMENTO") {
+    return false;
+  }
+  const dueDate = parseDateOnly(ticket.prazo_alvo);
+  if (!dueDate) {
+    return false;
+  }
+
+  const now = new Date();
+  const todayUtc = Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate());
+  const dueUtc = Date.UTC(dueDate.getUTCFullYear(), dueDate.getUTCMonth(), dueDate.getUTCDate());
+  return dueUtc < todayUtc;
 };
 
 type TicketForm = {
@@ -461,6 +543,17 @@ const emptyTicketFilters = (): TicketFilters => ({
   instrument_id: "",
   responsavel_user_id: "",
   q: ""
+});
+
+const emptyTicketReportFilters = (): TicketReportFilters => ({
+  status: "",
+  prioridade: "",
+  origem: "",
+  responsavel_user_id: "",
+  somente_atrasados: false,
+  q: "",
+  data_de: "",
+  data_ate: ""
 });
 
 const emptyTicketForm = (): TicketForm => ({
@@ -872,6 +965,110 @@ const exportObraReportPdf = (report: ObraReportResponse, mode: ReportPdfMode) =>
   popup.document.close();
 };
 
+const exportTicketReportCsv = (items: Ticket[]) => {
+  const columns = [
+    "codigo",
+    "status",
+    "prioridade",
+    "origem",
+    "criado_por",
+    "responsavel",
+    "titulo",
+    "instrumento",
+    "prazo_alvo",
+    "sla",
+    "atrasado",
+    "created_at",
+    "updated_at",
+    "resolvido_em"
+  ] as const;
+
+  const header = columns.map((col) => toCsvCell(col)).join(";");
+  const rows = items.map((item) => {
+    const row = {
+      codigo: item.codigo,
+      status: TICKET_STATUS_LABELS[item.status],
+      prioridade: TICKET_PRIORITY_LABELS[item.prioridade],
+      origem: TICKET_SOURCE_LABELS[item.origem],
+      criado_por: item.criado_por.nome,
+      responsavel: item.responsavel?.nome ?? "Nao atribuido",
+      titulo: item.titulo,
+      instrumento: item.instrumento?.instrumento ?? item.instrumento_informado ?? "Sem instrumento",
+      prazo_alvo: item.prazo_alvo ?? "",
+      sla: formatTicketSla(item),
+      atrasado: isTicketOverdue(item) ? "SIM" : "NAO",
+      created_at: new Date(item.created_at).toLocaleString("pt-BR"),
+      updated_at: new Date(item.updated_at).toLocaleString("pt-BR"),
+      resolvido_em: item.resolvido_em ? new Date(item.resolvido_em).toLocaleString("pt-BR") : ""
+    };
+
+    return columns.map((col) => toCsvCell(row[col])).join(";");
+  });
+
+  const csv = [header, ...rows].join("\n");
+  const blob = new Blob([csv], { type: "text/csv;charset=utf-8;" });
+  const url = URL.createObjectURL(blob);
+  const link = document.createElement("a");
+  link.href = url;
+  link.download = `relatorio-tickets-${todayDate()}.csv`;
+  link.click();
+  URL.revokeObjectURL(url);
+};
+
+const exportTicketReportExcel = (items: Ticket[]) => {
+  const rows = items
+    .map(
+      (item) =>
+        `<tr><td>${item.codigo}</td><td>${TICKET_STATUS_LABELS[item.status]}</td><td>${TICKET_PRIORITY_LABELS[item.prioridade]}</td><td>${TICKET_SOURCE_LABELS[item.origem]}</td><td>${item.criado_por.nome}</td><td>${item.responsavel?.nome ?? "Nao atribuido"}</td><td>${item.titulo}</td><td>${item.instrumento?.instrumento ?? item.instrumento_informado ?? "Sem instrumento"}</td><td>${item.prazo_alvo ?? ""}</td><td>${formatTicketSla(item)}</td><td>${isTicketOverdue(item) ? "SIM" : "NAO"}</td><td>${new Date(item.created_at).toLocaleString("pt-BR")}</td><td>${new Date(item.updated_at).toLocaleString("pt-BR")}</td><td>${item.resolvido_em ? new Date(item.resolvido_em).toLocaleString("pt-BR") : ""}</td></tr>`
+    )
+    .join("");
+
+  const html = `<!doctype html><html><head><meta charset="utf-8" /></head><body><h3>Relatorio de tickets</h3><table border="1"><thead><tr><th>Codigo</th><th>Status</th><th>Prioridade</th><th>Origem</th><th>Criado por</th><th>Atribuido</th><th>Titulo</th><th>Instrumento</th><th>Prazo alvo</th><th>SLA</th><th>Atrasado</th><th>Criado em</th><th>Atualizado em</th><th>Resolvido em</th></tr></thead><tbody>${rows}</tbody></table></body></html>`;
+
+  const blob = new Blob([html], { type: "application/vnd.ms-excel;charset=utf-8;" });
+  const url = URL.createObjectURL(blob);
+  const link = document.createElement("a");
+  link.href = url;
+  link.download = `relatorio-tickets-${todayDate()}.xls`;
+  link.click();
+  URL.revokeObjectURL(url);
+};
+
+const exportTicketReportPdf = (items: Ticket[], mode: ReportPdfMode) => {
+  const popup = window.open("", "_blank");
+  if (!popup) {
+    return;
+  }
+
+  const total = items.length;
+  const abertos = items.filter((item) => item.status === "ABERTO" || item.status === "EM_ANDAMENTO").length;
+  const resolvidos = items.filter((item) => item.status === "RESOLVIDO").length;
+  const atrasados = items.filter((item) => isTicketOverdue(item)).length;
+  const semAtribuicao = items.filter((item) => !item.responsavel).length;
+
+  const tempoResolucaoDias = items
+    .filter((item) => item.resolvido_em)
+    .map((item) => {
+      const started = new Date(item.created_at).getTime();
+      const resolved = new Date(item.resolvido_em as string).getTime();
+      return Math.max(0, (resolved - started) / (1000 * 60 * 60 * 24));
+    });
+  const tempoMedioResolucaoDias =
+    tempoResolucaoDias.length === 0
+      ? 0
+      : tempoResolucaoDias.reduce((acc, value) => acc + value, 0) / tempoResolucaoDias.length;
+
+  const rows = items
+    .map(
+      (item) =>
+        `<tr><td>${item.codigo}</td><td>${item.titulo}</td><td>${TICKET_STATUS_LABELS[item.status]}</td><td>${TICKET_PRIORITY_LABELS[item.prioridade]}</td><td>${item.responsavel?.nome ?? "Nao atribuido"}</td><td>${item.prazo_alvo ?? "-"}</td><td>${formatTicketSla(item)}</td><td>${new Date(item.created_at).toLocaleString("pt-BR")}</td><td>${item.resolvido_em ? new Date(item.resolvido_em).toLocaleString("pt-BR") : "-"}</td></tr>`
+    )
+    .join("");
+
+  popup.document.write(`<!doctype html><html><head><meta charset="utf-8" /><title>Relatorio de tickets</title><style>body{font-family:Segoe UI,Arial,sans-serif;padding:24px;color:#102a43}.report-head{display:flex;align-items:center;justify-content:space-between;gap:12px;margin-bottom:14px}.report-head img{max-width:180px;height:auto;display:block}h1,h2{margin:0 0 12px}table{width:100%;border-collapse:collapse;margin-top:12px}th,td{border:1px solid #cbd5e1;padding:8px;font-size:12px;text-align:left;vertical-align:top}.kpi{display:grid;grid-template-columns:repeat(6,minmax(0,1fr));gap:10px;margin:16px 0}.kpi div{border:1px solid #cbd5e1;border-radius:8px;padding:10px}</style></head><body><div class="report-head"><img src="/api/v1/public/brand-logo" alt="NC Convenios" /><h1>Relatorio de tickets (${mode})</h1></div><div class="kpi"><div><strong>Total</strong><br/>${total}</div><div><strong>Em aberto</strong><br/>${abertos}</div><div><strong>Resolvidos</strong><br/>${resolvidos}</div><div><strong>Atrasados</strong><br/>${atrasados}</div><div><strong>Sem atribuicao</strong><br/>${semAtribuicao}</div><div><strong>Tempo medio resolucao</strong><br/>${tempoMedioResolucaoDias.toFixed(1)} dia(s)</div></div>${mode === "analitico" ? `<h2>Tickets</h2><table><thead><tr><th>Codigo</th><th>Titulo</th><th>Status</th><th>Prioridade</th><th>Atribuido</th><th>Prazo alvo</th><th>SLA</th><th>Criado em</th><th>Resolvido em</th></tr></thead><tbody>${rows}</tbody></table>` : ""}<script>window.print()</script></body></html>`);
+  popup.document.close();
+};
+
 export default function App() {
   const logoSrc = "/logo-gestconv-novo-semfundo-removebg-preview.png";
 
@@ -881,12 +1078,20 @@ export default function App() {
     reportRouteStatus: "checking",
     lastCheckedAt: null
   });
-  const [activeView, setActiveView] = useState<MenuView>(() =>
-    readInstrumentIdFromPath(window.location.pathname) ? "instrumentos" : "dashboard"
-  );
+  const [activeView, setActiveView] = useState<MenuView>(() => {
+    if (readInstrumentIdFromPath(window.location.pathname)) {
+      return "instrumentos";
+    }
+    if (readTicketIdFromSearch(window.location.search)) {
+      return "tickets";
+    }
+    return "dashboard";
+  });
   const [instrumentPageId, setInstrumentPageId] = useState<number | null>(() =>
     readInstrumentIdFromPath(window.location.pathname)
   );
+  const [menuTransition, setMenuTransition] = useState<"" | "menu-to-tickets" | "menu-from-tickets">("");
+  const menuTransitionTimeoutRef = useRef<number | null>(null);
 
   const [token, setToken] = useState<string>(() => localStorage.getItem(TOKEN_KEY) ?? "");
   const [user, setUser] = useState<User | null>(() => readStoredUser());
@@ -941,6 +1146,13 @@ export default function App() {
   const [repasseValorInput, setRepasseValorInput] = useState(formatCurrencyInput(0));
   const [repasseDataInput, setRepasseDataInput] = useState(todayDate());
   const [empresaVencedoraInput, setEmpresaVencedoraInput] = useState("");
+  const [showSolicitacoesCaixaPanel, setShowSolicitacoesCaixaPanel] = useState(false);
+  const [solicitacoesCaixaItens, setSolicitacoesCaixaItens] = useState<any[]>([]);
+  const [solicitacoesCaixaLoading, setSolicitacoesCaixaLoading] = useState(false);
+  const [ticketInstrumentSearch, setTicketInstrumentSearch] = useState("");
+  const [ticketInstrumentResults, setTicketInstrumentResults] = useState<any[]>([]);
+  const [ticketInstrumentSearching, setTicketInstrumentSearching] = useState(false);
+  const [showTicketModalFromSolicitacao, setShowTicketModalFromSolicitacao] = useState(false);
 
   const [convenetes, setConvenetes] = useState<Convenete[]>([]);
   const [ticketFilters, setTicketFilters] = useState<TicketFilters>(() => emptyTicketFilters());
@@ -953,21 +1165,59 @@ export default function App() {
     return "abertos";
   });
   const [selectedTicket, setSelectedTicket] = useState<Ticket | null>(null);
+  const [ticketIdFromUrl, setTicketIdFromUrl] = useState<number | null>(() => readTicketIdFromSearch(window.location.search));
   const [ticketForm, setTicketForm] = useState<TicketForm>(() => emptyTicketForm());
   const [ticketResolutionReason, setTicketResolutionReason] = useState("");
   const [ticketCommentText, setTicketCommentText] = useState("");
+  const [showTicketCreateModal, setShowTicketCreateModal] = useState(false);
   const [ticketAssignableUsers, setTicketAssignableUsers] = useState<Array<{ id: number; nome: string; email: string; role: Role }>>([]);
   const [relatorioTab, setRelatorioTab] = useState<RelatorioTab>("repasses");
   const [reportFilters, setReportFilters] = useState<ReportFilters>(() => emptyReportFilters());
   const [reportData, setReportData] = useState<RepasseReportResponse | null>(null);
   const [obraReportFilters, setObraReportFilters] = useState<ObraReportFilters>(() => emptyObraReportFilters());
   const [obraReportData, setObraReportData] = useState<ObraReportResponse | null>(null);
+  const [ticketReportFilters, setTicketReportFilters] = useState<TicketReportFilters>(() => emptyTicketReportFilters());
+  const [ticketReportData, setTicketReportData] = useState<Ticket[] | null>(null);
   const [conveneteForm, setConveneteForm] = useState<ConveneteForm>(() => emptyConveneteForm());
   const [editingConveneteId, setEditingConveneteId] = useState<number | null>(null);
   const [managedUsers, setManagedUsers] = useState<ManagedUser[]>([]);
   const [adminUserForm, setAdminUserForm] = useState<AdminUserForm>(() => emptyAdminUserForm());
   const [editingManagedUserId, setEditingManagedUserId] = useState<number | null>(null);
   const [isUploadingAvatar, setIsUploadingAvatar] = useState(false);
+
+  const [signatureTab, setSignatureTab] = useState<SignatureTab>("certificados");
+  const [certificates, setCertificates] = useState<any[]>([]);
+  const [documents, setDocuments] = useState<any[]>([]);
+  const [documentSearchQuery, setDocumentSearchQuery] = useState("");
+  const [documentSearchStatus, setDocumentSearchStatus] = useState<"" | "PENDENTE" | "ASSINADO" | "CANCELADO">("");
+  const [documentSearchDataDe, setDocumentSearchDataDe] = useState("");
+  const [documentSearchDataAte, setDocumentSearchDataAte] = useState("");
+  const [documentSearchSemantic, setDocumentSearchSemantic] = useState(true);
+  const [documentSearchResults, setDocumentSearchResults] = useState<DocumentSearchResult[]>([]);
+  const [isSearchingDocuments, setIsSearchingDocuments] = useState(false);
+  const [reindexingDocumentId, setReindexingDocumentId] = useState<number | null>(null);
+  const [classifyingDocumentId, setClassifyingDocumentId] = useState<number | null>(null);
+  const [qaDocumentId, setQaDocumentId] = useState<number | null>(null);
+  const [qaDocumentTitle, setQaDocumentTitle] = useState("");
+  const [qaQuestion, setQaQuestion] = useState("");
+  const [qaAnswer, setQaAnswer] = useState("");
+  const [qaSources, setQaSources] = useState<Array<{ chunkIndex: number; score: number; snippet: string }>>([]);
+  const [isAskingDocument, setIsAskingDocument] = useState(false);
+  const [certificateForm, setCertificateForm] = useState({ nome: "", titular: "", cpf: "", validade: "", arquivo: "", senha: "" });
+  const [documentForm, setDocumentForm] = useState<{ titulo: string; descricao: string; arquivo: File | null; arquivo_nome: string }>({
+    titulo: "",
+    descricao: "",
+    arquivo: null,
+    arquivo_nome: ""
+  });
+  const [showSignModal, setShowSignModal] = useState(false);
+  const [signDocumentId, setSignDocumentId] = useState<number | null>(null);
+  const [signCertificateId, setSignCertificateId] = useState<number | null>(null);
+  const [signPassword, setSignPassword] = useState("");
+  const [activeCertificates, setActiveCertificates] = useState<any[]>([]);
+  const [isUploadingDocument, setIsUploadingDocument] = useState(false);
+  const [deletingDocumentId, setDeletingDocumentId] = useState<number | null>(null);
+  const documentUploadInputRef = useRef<HTMLInputElement | null>(null);
 
   const isAuthenticated = Boolean(token && user);
   const canManageInstruments = user?.role === "ADMIN" || user?.role === "GESTOR";
@@ -1128,6 +1378,62 @@ export default function App() {
     return openTickets;
   }, [ticketBoardTab, openTickets, resolvedTickets, canceledTickets]);
 
+  const ticketReportSummary = useMemo(() => {
+    const items = ticketReportData ?? [];
+    const total = items.length;
+    const abertos = items.filter((item) => item.status === "ABERTO" || item.status === "EM_ANDAMENTO").length;
+    const resolvidos = items.filter((item) => item.status === "RESOLVIDO").length;
+    const cancelados = items.filter((item) => item.status === "CANCELADO").length;
+    const atrasados = items.filter((item) => isTicketOverdue(item)).length;
+    const semAtribuicao = items.filter((item) => !item.responsavel).length;
+
+    const tempoResolucaoDias = items
+      .filter((item) => item.resolvido_em)
+      .map((item) => {
+        const started = new Date(item.created_at).getTime();
+        const resolved = new Date(item.resolvido_em as string).getTime();
+        return Math.max(0, (resolved - started) / (1000 * 60 * 60 * 24));
+      });
+
+    const tempoMedioResolucaoDias =
+      tempoResolucaoDias.length === 0
+        ? 0
+        : tempoResolucaoDias.reduce((acc, value) => acc + value, 0) / tempoResolucaoDias.length;
+
+    const porPrioridade = TICKET_PRIORITY_OPTIONS.map((priority) => ({
+      prioridade: priority,
+      quantidade: items.filter((item) => item.prioridade === priority).length
+    }));
+
+    const porStatus = TICKET_STATUS_OPTIONS.map((status) => ({
+      status,
+      quantidade: items.filter((item) => item.status === status).length
+    }));
+
+    const porResponsavel = new Map<string, number>();
+    for (const item of items) {
+      const key = item.responsavel?.nome ?? "Nao atribuido";
+      porResponsavel.set(key, (porResponsavel.get(key) ?? 0) + 1);
+    }
+    const topResponsaveis = Array.from(porResponsavel.entries())
+      .map(([nome, quantidade]) => ({ nome, quantidade }))
+      .sort((a, b) => b.quantidade - a.quantidade)
+      .slice(0, 6);
+
+    return {
+      total,
+      abertos,
+      resolvidos,
+      cancelados,
+      atrasados,
+      semAtribuicao,
+      tempoMedioResolucaoDias,
+      porPrioridade,
+      porStatus,
+      topResponsaveis
+    };
+  }, [ticketReportData]);
+
   const refreshTechnicalHealth = async () => {
     let backendVersion = "desconhecida";
 
@@ -1220,10 +1526,13 @@ export default function App() {
     setReportData(null);
     setObraReportFilters(emptyObraReportFilters());
     setObraReportData(null);
+    setTicketReportFilters(emptyTicketReportFilters());
+    setTicketReportData(null);
     setTicketFilters(emptyTicketFilters());
     setTickets([]);
     setTicketBoardTab("abertos");
     setSelectedTicket(null);
+    setTicketIdFromUrl(null);
     setTicketForm(emptyTicketForm());
     setTicketResolutionReason("");
     setTicketCommentText("");
@@ -1239,7 +1548,7 @@ export default function App() {
     setAdminUserForm(emptyAdminUserForm());
     setFilters(blankFilters());
     setInstrumentPageId(null);
-    if (window.location.pathname !== "/") {
+    if (window.location.pathname !== "/" || window.location.search !== "") {
       window.history.replaceState({}, "", "/");
     }
     localStorage.removeItem(TOKEN_KEY);
@@ -1258,6 +1567,14 @@ export default function App() {
   }, []);
 
   useEffect(() => {
+    return () => {
+      if (menuTransitionTimeoutRef.current !== null) {
+        window.clearTimeout(menuTransitionTimeoutRef.current);
+      }
+    };
+  }, []);
+
+  useEffect(() => {
     localStorage.setItem(TICKET_TAB_KEY, ticketBoardTab);
   }, [ticketBoardTab]);
 
@@ -1270,6 +1587,31 @@ export default function App() {
       setSelectedTicket(null);
     }
   }, [visibleTickets, selectedTicket]);
+
+  useEffect(() => {
+    if (!isAuthenticated || !token || ticketIdFromUrl === null) {
+      return;
+    }
+
+    if (selectedTicket?.id === ticketIdFromUrl) {
+      return;
+    }
+
+    setActiveView("tickets");
+    void onSelectTicket(ticketIdFromUrl, false);
+  }, [isAuthenticated, token, ticketIdFromUrl]);
+
+  useEffect(() => {
+    if (activeView !== "tickets" || window.location.pathname !== "/") {
+      return;
+    }
+
+    const currentUrl = `${window.location.pathname}${window.location.search}`;
+    const nextUrl = selectedTicket ? `/?ticket=${selectedTicket.id}` : "/";
+    if (currentUrl !== nextUrl) {
+      window.history.replaceState({}, "", nextUrl);
+    }
+  }, [activeView, selectedTicket]);
 
   const navigateToInstrumentList = () => {
     setInstrumentPageId(null);
@@ -1532,9 +1874,15 @@ export default function App() {
   useEffect(() => {
     const onPopState = () => {
       const idFromPath = readInstrumentIdFromPath(window.location.pathname);
+      const ticketFromSearch = readTicketIdFromSearch(window.location.search);
       setInstrumentPageId(idFromPath);
+      setTicketIdFromUrl(ticketFromSearch);
       if (idFromPath !== null) {
         setActiveView("instrumentos");
+        return;
+      }
+      if (ticketFromSearch !== null) {
+        setActiveView("tickets");
       }
     };
 
@@ -1669,6 +2017,22 @@ export default function App() {
   }, [activeView, isAuthenticated, relatorioTab, obraReportData]);
 
   useEffect(() => {
+    if (!isAuthenticated || activeView !== "relatorios") {
+      return;
+    }
+
+    if (relatorioTab !== "tickets") {
+      return;
+    }
+
+    if (ticketReportData) {
+      return;
+    }
+
+    void onApplyTicketReportFilters();
+  }, [activeView, isAuthenticated, relatorioTab, ticketReportData]);
+
+  useEffect(() => {
     if (reportFilters.instrumento_id.trim() === "") {
       return;
     }
@@ -1693,6 +2057,27 @@ export default function App() {
       setObraReportData(null);
     }
   }, [obraReportFilters.instrumento_id, obraReportInstrumentOptions]);
+
+  useEffect(() => {
+    if (!isAuthenticated || activeView !== "assinaturas") {
+      return;
+    }
+    void onLoadCertificates();
+    void onLoadDocuments();
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [isAuthenticated, activeView]);
+
+  useEffect(() => {
+    if (!isAuthenticated || activeView !== "assinaturas") {
+      return;
+    }
+    if (signatureTab === "certificados") {
+      void onLoadCertificates();
+    } else {
+      void onLoadDocuments();
+    }
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [signatureTab]);
 
   const onToggleWorkflowStage = (stage: WorkflowStage) => {
     setActiveWorkflowStage((prev) => (prev === stage ? null : stage));
@@ -2084,6 +2469,25 @@ export default function App() {
   };
 
   const onChangeView = (view: MenuView) => {
+    const transitionClass =
+      activeView !== "tickets" && view === "tickets"
+        ? "menu-to-tickets"
+        : activeView === "tickets" && view !== "tickets"
+          ? "menu-from-tickets"
+          : "";
+
+    setMenuTransition(transitionClass);
+    if (menuTransitionTimeoutRef.current !== null) {
+      window.clearTimeout(menuTransitionTimeoutRef.current);
+      menuTransitionTimeoutRef.current = null;
+    }
+    if (transitionClass) {
+      menuTransitionTimeoutRef.current = window.setTimeout(() => {
+        setMenuTransition("");
+        menuTransitionTimeoutRef.current = null;
+      }, 520);
+    }
+
     setActiveView(view);
     if (view === "instrumentos") {
       setShowCreateInstrumentForm(false);
@@ -2092,11 +2496,14 @@ export default function App() {
       return;
     }
 
-    if (window.location.pathname !== "/") {
+    if (window.location.pathname !== "/" || window.location.search !== "") {
       window.history.pushState({}, "", "/");
     }
     setInstrumentPageId(null);
+    setTicketIdFromUrl(null);
   };
+
+  const appShellClassName = `${activeView === "tickets" ? "app-shell tickets-top-nav" : "app-shell"}${menuTransition ? ` ${menuTransition}` : ""}`;
 
   const onApplyRepasseReportFilters = async () => {
     if (reportFilters.convenete_id.trim() === "") {
@@ -2132,6 +2539,57 @@ export default function App() {
     setObraReportData(null);
   };
 
+  const onApplyTicketReportFilters = async () => {
+    if (!token) {
+      return;
+    }
+
+    setIsBusy(true);
+    setMessage("");
+    try {
+      const items = await listTickets(token, {
+        status: ticketReportFilters.status || undefined,
+        prioridade: ticketReportFilters.prioridade || undefined,
+        origem: ticketReportFilters.origem || undefined,
+        somente_atrasados: ticketReportFilters.somente_atrasados,
+        responsavel_user_id:
+          ticketReportFilters.responsavel_user_id.trim() === ""
+            ? undefined
+            : Number(ticketReportFilters.responsavel_user_id),
+        q: ticketReportFilters.q.trim() === "" ? undefined : ticketReportFilters.q.trim()
+      });
+
+      const startDate = ticketReportFilters.data_de ? parseDateOnly(ticketReportFilters.data_de) : null;
+      const endDate = ticketReportFilters.data_ate ? parseDateOnly(ticketReportFilters.data_ate) : null;
+      const filteredByDate = items.filter((item) => {
+        if (!startDate && !endDate) {
+          return true;
+        }
+        const createdAt = new Date(item.created_at);
+        const createdUtc = Date.UTC(createdAt.getUTCFullYear(), createdAt.getUTCMonth(), createdAt.getUTCDate());
+        const startUtc = startDate
+          ? Date.UTC(startDate.getUTCFullYear(), startDate.getUTCMonth(), startDate.getUTCDate())
+          : Number.NEGATIVE_INFINITY;
+        const endUtc = endDate
+          ? Date.UTC(endDate.getUTCFullYear(), endDate.getUTCMonth(), endDate.getUTCDate())
+          : Number.POSITIVE_INFINITY;
+        return createdUtc >= startUtc && createdUtc <= endUtc;
+      });
+
+      setTicketReportData(filteredByDate);
+      setMessage("Relatorio de tickets atualizado com sucesso.");
+    } catch (error) {
+      setMessage(error instanceof Error ? error.message : "Falha ao gerar relatorio de tickets.");
+    } finally {
+      setIsBusy(false);
+    }
+  };
+
+  const onClearTicketReportFilters = () => {
+    setTicketReportFilters(emptyTicketReportFilters());
+    setTicketReportData(null);
+  };
+
   const onExportRepasseReportPdf = (mode: ReportPdfMode) => {
     if (!reportData) {
       setMessage("Gere o relatorio antes de exportar.");
@@ -2146,6 +2604,14 @@ export default function App() {
       return;
     }
     exportObraReportPdf(obraReportData, mode);
+  };
+
+  const onExportTicketReportPdf = (mode: ReportPdfMode) => {
+    if (!ticketReportData) {
+      setMessage("Gere o relatorio de tickets antes de exportar.");
+      return;
+    }
+    exportTicketReportPdf(ticketReportData, mode);
   };
 
   const onStartCreateInstrument = () => {
@@ -2557,6 +3023,7 @@ export default function App() {
       setTicketForm(emptyTicketForm());
       setTickets((prev) => [created, ...prev]);
       setSelectedTicket(created);
+      setShowTicketCreateModal(false);
       setMessage(`Ticket ${created.codigo} criado com sucesso.`);
     } catch (error) {
       setMessage(error instanceof Error ? error.message : "Falha ao criar ticket.");
@@ -2565,7 +3032,7 @@ export default function App() {
     }
   };
 
-  const onSelectTicket = async (id: number) => {
+  const onSelectTicket = async (id: number, syncUrl = true) => {
     if (!token) {
       return;
     }
@@ -2575,11 +3042,28 @@ export default function App() {
     try {
       const full = await getTicketById(token, id);
       setSelectedTicket(full);
+      setTicketIdFromUrl(id);
       setTicketResolutionReason(full.motivo_resolucao ?? "");
+      if (syncUrl) {
+        const nextUrl = `/?ticket=${id}`;
+        if (`${window.location.pathname}${window.location.search}` !== nextUrl) {
+          window.history.pushState({}, "", nextUrl);
+        }
+      }
     } catch (error) {
       setMessage(error instanceof Error ? error.message : "Falha ao carregar ticket.");
     } finally {
       setIsBusy(false);
+    }
+  };
+
+  const onCloseTicketDetail = () => {
+    setSelectedTicket(null);
+    setTicketIdFromUrl(null);
+    setTicketResolutionReason("");
+    setTicketCommentText("");
+    if (window.location.search !== "") {
+      window.history.pushState({}, "", "/");
     }
   };
 
@@ -2721,6 +3205,26 @@ export default function App() {
     }
   };
 
+  const onToggleTicketChecklistItem = async (ticketId: number, itemId: number, concluido: boolean) => {
+    if (!token || !canManageInstruments) {
+      return;
+    }
+
+    setIsBusy(true);
+    setMessage("");
+    try {
+      const { toggleTicketChecklistItem: toggleFn } = await import("./api");
+      const updated = await toggleFn(token, ticketId, itemId, concluido);
+      setSelectedTicket(updated);
+      setTickets((prev) => prev.map((item) => (item.id === updated.id ? updated : item)));
+      setMessage(concluido ? "Item marcado como concluido." : "Item marcado como pendente.");
+    } catch (error) {
+      setMessage(error instanceof Error ? error.message : "Falha ao atualizar checklist do ticket.");
+    } finally {
+      setIsBusy(false);
+    }
+  };
+
   const onAddRepasse = async () => {
     if (!token || instrumentPageId === null || !canManageInstruments || !profileInstrument) {
       return;
@@ -2806,6 +3310,348 @@ export default function App() {
       setMessage("Empresa vencedora salva com sucesso.");
     } catch (error) {
       setMessage(error instanceof Error ? error.message : "Falha ao salvar empresa vencedora.");
+    } finally {
+      setIsBusy(false);
+    }
+  };
+
+  const onLoadSolicitacoesCaixa = async () => {
+    if (!token || instrumentPageId === null) return;
+    setSolicitacoesCaixaLoading(true);
+    try {
+      const result = await listSolicitacoesCaixa(token, instrumentPageId);
+      setSolicitacoesCaixaItens(result.itens);
+    } catch (error) {
+      setMessage("Falha ao carregar solicitacoes.");
+    } finally {
+      setSolicitacoesCaixaLoading(false);
+    }
+  };
+
+  const onLoadCertificates = async () => {
+    if (!token) return;
+    try {
+      const result = await listCertificates(token);
+      setCertificates(result.certificados);
+    } catch (error) {
+      setMessage("Falha ao carregar certificados.");
+    }
+  };
+
+  const onLoadDocuments = async () => {
+    if (!token) return;
+    try {
+      const result = await listDocuments(token);
+      setDocuments(result.documentos);
+    } catch (error) {
+      console.error("[documents] Falha ao listar documentos", error);
+      setMessage("Falha ao carregar documentos.");
+    }
+  };
+
+  const onSearchDocuments = async () => {
+    if (!token) {
+      return;
+    }
+
+    const query = documentSearchQuery.trim();
+    if (!query) {
+      setMessage("Informe um termo para busca inteligente.");
+      return;
+    }
+
+    setIsSearchingDocuments(true);
+    setMessage("");
+    try {
+      const runSearch = documentSearchSemantic ? searchDocumentsSemantic : searchDocuments;
+      const response = await runSearch(token, {
+        q: query,
+        status: documentSearchStatus || undefined,
+        data_de: documentSearchDataDe || undefined,
+        data_ate: documentSearchDataAte || undefined,
+        limit: 40
+      });
+      setDocumentSearchResults(response.resultados);
+      setMessage(`${response.total} resultado(s) encontrado(s) na busca ${documentSearchSemantic ? "semantica" : "lexical"}.`);
+    } catch (error) {
+      setMessage(error instanceof Error ? error.message : "Falha ao pesquisar documentos.");
+    } finally {
+      setIsSearchingDocuments(false);
+    }
+  };
+
+  const onClassifyDocument = async (id: number) => {
+    if (!token) {
+      return;
+    }
+
+    setClassifyingDocumentId(id);
+    try {
+      await classifyDocument(token, id);
+      setMessage("Classificacao IA atualizada com sucesso.");
+      await onLoadDocuments();
+    } catch (error) {
+      setMessage(error instanceof Error ? error.message : "Falha ao classificar documento.");
+    } finally {
+      setClassifyingDocumentId(null);
+    }
+  };
+
+  const onReindexDocument = async (id: number) => {
+    if (!token) {
+      return;
+    }
+    setReindexingDocumentId(id);
+    try {
+      await reindexDocument(token, id);
+      setMessage("Reindexacao solicitada. Aguarde alguns segundos e atualize a lista.");
+      await onLoadDocuments();
+    } catch (error) {
+      setMessage(error instanceof Error ? error.message : "Falha ao reindexar documento.");
+    } finally {
+      setReindexingDocumentId(null);
+    }
+  };
+
+  const onOpenDocumentQa = (id: number, titulo: string) => {
+    setQaDocumentId(id);
+    setQaDocumentTitle(titulo);
+    setQaQuestion("");
+    setQaAnswer("");
+    setQaSources([]);
+  };
+
+  const onAskDocumentQuestion = async () => {
+    if (!token || qaDocumentId === null) {
+      return;
+    }
+    const question = qaQuestion.trim();
+    if (question.length < 3) {
+      setMessage("Informe uma pergunta com pelo menos 3 caracteres.");
+      return;
+    }
+
+    setIsAskingDocument(true);
+    setMessage("");
+    try {
+      const result = await askDocumentQuestion(token, qaDocumentId, question);
+      setQaAnswer(result.resposta);
+      setQaSources(result.fontes);
+    } catch (error) {
+      setMessage(error instanceof Error ? error.message : "Falha ao consultar IA do documento.");
+    } finally {
+      setIsAskingDocument(false);
+    }
+  };
+
+  const onLoadActiveCertificates = async () => {
+    if (!token) return;
+    try {
+      const certs = await getActiveCertificates(token);
+      setActiveCertificates(certs);
+    } catch (error) {
+      console.error("Falha ao carregar certificados ativos:", error);
+    }
+  };
+
+  const onCreateCertificate = async () => {
+    if (!token || !certificateForm.nome || !certificateForm.titular || !certificateForm.cpf || !certificateForm.validade || !certificateForm.arquivo || !certificateForm.senha) {
+      setMessage("Preencha todos os campos obrigatorios.");
+      return;
+    }
+    setIsBusy(true);
+    try {
+      await createCertificate(token, certificateForm);
+      setMessage("Certificado cadastrado com sucesso.");
+      setCertificateForm({ nome: "", titular: "", cpf: "", validade: "", arquivo: "", senha: "" });
+      onLoadCertificates();
+    } catch (error) {
+      setMessage(error instanceof Error ? error.message : "Falha ao cadastrar certificado.");
+    } finally {
+      setIsBusy(false);
+    }
+  };
+
+  const onRevokeCertificate = async (id: number) => {
+    if (!token) return;
+    setIsBusy(true);
+    try {
+      await revokeCertificate(token, id);
+      setMessage("Certificado revogado com sucesso.");
+      onLoadCertificates();
+    } catch (error) {
+      setMessage(error instanceof Error ? error.message : "Falha ao revogar certificado.");
+    } finally {
+      setIsBusy(false);
+    }
+  };
+
+  const onCreateDocument = async () => {
+    const titulo = documentForm.titulo.trim();
+    const arquivo = documentForm.arquivo ?? documentUploadInputRef.current?.files?.[0] ?? null;
+    const arquivoNome = documentForm.arquivo_nome.trim() || arquivo?.name || "";
+
+    if (!token) {
+      setMessage("Sessao expirada. Faca login novamente.");
+      return;
+    }
+
+    if (!titulo) {
+      setMessage("Preencha o titulo do documento.");
+      return;
+    }
+
+    if (!arquivo) {
+      setMessage("Selecione um arquivo PDF.");
+      console.warn("[documents] Tentativa sem arquivo no estado", {
+        titulo,
+        arquivoNomeDigitado: documentForm.arquivo_nome
+      });
+      return;
+    }
+
+    setIsUploadingDocument(true);
+    try {
+      const createdDocument = await createDocument(token, {
+        titulo,
+        descricao: documentForm.descricao,
+        arquivo,
+        arquivo_nome: arquivoNome
+      });
+
+      setDocuments((prev) => [
+        {
+          ...createdDocument,
+          criado_por: user ? { id: user.id, nome: user.nome, email: user.email } : { id: 0, nome: "", email: "" },
+          assinaturas: []
+        },
+        ...prev.filter((item) => item.id !== createdDocument.id)
+      ]);
+
+      setMessage("Documento carregado com sucesso.");
+      setDocumentForm({ titulo: "", descricao: "", arquivo: null, arquivo_nome: "" });
+      if (documentUploadInputRef.current) {
+        documentUploadInputRef.current.value = "";
+      }
+      void onLoadDocuments();
+    } catch (error) {
+      console.error("[documents] Falha ao carregar documento", {
+        titulo: documentForm.titulo,
+        arquivoNome: documentForm.arquivo_nome,
+        arquivoSize: documentForm.arquivo?.size,
+        arquivoType: documentForm.arquivo?.type,
+        error
+      });
+      setMessage(error instanceof Error ? error.message : "Falha ao carregar documento.");
+    } finally {
+      setIsUploadingDocument(false);
+    }
+  };
+
+  const onDeleteDocument = async (id: number, status: string) => {
+    if (status === "ASSINADO") {
+      setMessage("Nao e possivel excluir documento assinado.");
+      return;
+    }
+
+    if (!token) {
+      setMessage("Sessao expirada. Faca login novamente.");
+      return;
+    }
+
+    if (!confirm("Tem certeza que deseja excluir este documento?")) return;
+    setDeletingDocumentId(id);
+    try {
+      await deleteDocument(token, id);
+      setMessage("Documento excluido com sucesso.");
+      onLoadDocuments();
+    } catch (error) {
+      setMessage(error instanceof Error ? error.message : "Falha ao excluir documento.");
+    } finally {
+      setDeletingDocumentId(null);
+    }
+  };
+
+  const onDownloadDocument = async (id: number, arquivoNome: string) => {
+    if (!token) {
+      setMessage("Sessao expirada. Faca login novamente.");
+      return;
+    }
+
+    try {
+      await downloadDocument(token, id, arquivoNome || "documento.pdf");
+    } catch (error) {
+      console.error("[documents] Falha ao baixar documento", { id, arquivoNome, error });
+      setMessage(error instanceof Error ? error.message : "Falha ao baixar documento.");
+    }
+  };
+
+  const onOpenSignModal = (docId: number) => {
+    setSignDocumentId(docId);
+    setSignCertificateId(null);
+    setSignPassword("");
+    onLoadActiveCertificates();
+    setShowSignModal(true);
+  };
+
+  const onSignDocument = async () => {
+    if (!token || !signDocumentId || !signCertificateId || !signPassword) {
+      setMessage("Selecione um documento e certificado e informe a senha.");
+      return;
+    }
+    setIsBusy(true);
+    try {
+      await signDocument(token, { document_id: signDocumentId, certificate_id: signCertificateId, senha: signPassword });
+      setMessage("Documento assinado com sucesso!");
+      setShowSignModal(false);
+      onLoadDocuments();
+    } catch (error) {
+      setMessage(error instanceof Error ? error.message : "Falha ao assinar documento.");
+    } finally {
+      setIsBusy(false);
+    }
+  };
+
+  const onOpenTicketFromSolicitacao = async (ticketId: number) => {
+    if (!token) return;
+    try {
+      const fullTicket = await getTicketById(token, ticketId);
+      setSelectedTicket(fullTicket);
+      setShowTicketModalFromSolicitacao(true);
+    } catch (error) {
+      setMessage("Falha ao carregar detalhes do ticket.");
+    }
+  };
+
+  const onSearchTicketInstrument = async (q: string) => {
+    setTicketInstrumentSearch(q);
+    if (q.length < 2) {
+      setTicketInstrumentResults([]);
+      return;
+    }
+    setTicketInstrumentSearching(true);
+    try {
+      const results = await searchInstrumentos(token, q);
+      setTicketInstrumentResults(results);
+    } catch {
+      setTicketInstrumentResults([]);
+    } finally {
+      setTicketInstrumentSearching(false);
+    }
+  };
+
+  const onAssociateTicketInstrument = async (instrumentId: number) => {
+    if (!token || !selectedTicket) return;
+    setIsBusy(true);
+    setMessage("");
+    try {
+      const result = await associateTicketInstrument(token, selectedTicket.id, instrumentId);
+      setSelectedTicket(result.ticket);
+      setTicketInstrumentSearch("");
+      setTicketInstrumentResults([]);
+      setMessage("Instrumento associado com sucesso.");
+    } catch (error) {
+      setMessage(error instanceof Error ? error.message : "Falha ao associar instrumento.");
     } finally {
       setIsBusy(false);
     }
@@ -3111,7 +3957,7 @@ export default function App() {
 
   return (
     <div className="page">
-      <div className="app-shell">
+      <div className={appShellClassName}>
         <aside className="card sidebar">
           <img className="sidebar-logo" src={logoSrc} alt="Gestconv360" />
           <p className="eyebrow">Menu</p>
@@ -3145,6 +3991,26 @@ export default function App() {
               Usuarios
             </button>
           )}
+          <button
+            type="button"
+            className={activeView === "assinaturas" && signatureTab === "certificados" ? "menu-item active" : "menu-item"}
+            onClick={() => {
+              setSignatureTab("certificados");
+              onChangeView("assinaturas");
+            }}
+          >
+            Certificados
+          </button>
+          <button
+            type="button"
+            className={activeView === "assinaturas" && signatureTab === "documentos" ? "menu-item active" : "menu-item"}
+            onClick={() => {
+              setSignatureTab("documentos");
+              onChangeView("assinaturas");
+            }}
+          >
+            Documentos IA
+          </button>
           <button
             type="button"
             className={activeView === "auditoria" ? "menu-item active" : "menu-item"}
@@ -3202,6 +4068,8 @@ export default function App() {
         </aside>
 
         <main className="content">
+          {activeView !== "tickets" && (
+          <>
           <header className="card topbar">
             <div>
               <h2>
@@ -3217,9 +4085,11 @@ export default function App() {
                       ? "Gestao de Usuarios"
                     : activeView === "auditoria"
                       ? "Auditoria e Historico"
-                      : activeView === "tickets"
-                        ? "Central de Tickets"
-                       : "Relatorios Analiticos"}
+                    : activeView === "assinaturas"
+                      ? signatureTab === "documentos"
+                        ? "Documentos Inteligentes"
+                        : "Certificados Digitais"
+                      : "Relatorios Analiticos"}
               </h2>
               <p className="subtitle">
                 {isInstrumentProfileView
@@ -3256,6 +4126,8 @@ export default function App() {
               Verificar agora
             </button>
           </section>
+          </>
+          )}
 
           {activeView === "dashboard" ? (
             <section className="dashboard">
@@ -3587,9 +4459,27 @@ export default function App() {
                             onClick={() => {
                               setShowWorkProgressPanel((prev) => !prev);
                               setShowRepassePanel(false);
+                              setShowSolicitacoesCaixaPanel(false);
                             }}
                           >
                             Acompanhamento de obras
+                          </button>
+                        )}
+                        {profileInstrument && (
+                          <button
+                            type="button"
+                            className={`secondary panel-toggle${showSolicitacoesCaixaPanel ? " active" : ""}`}
+                            onClick={() => {
+                              const willOpen = !showSolicitacoesCaixaPanel;
+                              setShowSolicitacoesCaixaPanel(willOpen);
+                              setShowRepassePanel(false);
+                              setShowWorkProgressPanel(false);
+                              if (willOpen) {
+                                onLoadSolicitacoesCaixa();
+                              }
+                            }}
+                          >
+                            Solicitações Caixa
                           </button>
                         )}
                         {canManageInstruments && profileInstrument && (
@@ -3829,7 +4719,134 @@ export default function App() {
                           </div>
                         )}
 
-                        {!showRepassePanel && !showWorkProgressPanel && (
+                        {showSolicitacoesCaixaPanel && (
+                          <div className="work-progress-card">
+                            <h3>Solicitações Caixa</h3>
+                            <p className="subtitle">
+                              Historico de interacoes deste instrumento com a Caixa.
+                            </p>
+                            {solicitacoesCaixaLoading ? (
+                              <p>Carregando...</p>
+                            ) : solicitacoesCaixaItens.length === 0 ? (
+                              <p className="subtitle">Nenhuma solicitacao registrada.</p>
+                            ) : (
+                              <div className="solicitacoes-caixa-list">
+                                {solicitacoesCaixaItens.map((item) => (
+                                  <div key={item.id} className="solicitacao-caixa-item">
+                                    <div className="solicitacao-caixa-header">
+                                      <span className={`solicitacao-caixa-tipo tipo-${item.tipo.toLowerCase()}`}>
+                                        {item.tipo === "EMAIL_RECEBIDO" && "📧 E-mail"}
+                                        {item.tipo === "COMENTARIO_TICKET" && "💬 Comentario"}
+                                        {item.tipo === "RESPOTA_ENVIADA" && "📤 Resposta"}
+                                        {item.tipo === "ASSOCIAÇÃO_MANUAL" && "🔗 Associacao"}
+                                      </span>
+                                      <span className="solicitacao-caixa-data">
+                                        {new Date(item.created_at).toLocaleString("pt-BR")}
+                                      </span>
+                                    </div>
+                                    <p className="solicitacao-caixa-desc">{item.descricao}</p>
+                                    {item.origem_email && (
+                                      <p className="subtitle">De: {item.origem_email}</p>
+                                    )}
+                                    {item.assunto_email && (
+                                      <p className="subtitle">Assunto: {item.assunto_email}</p>
+                                    )}
+                                    {item.ticket && (
+                                      <p className="subtitle">
+                                        Ticket: <a href="#" onClick={(e) => { e.preventDefault(); onOpenTicketFromSolicitacao(item.ticket.id); }}>{item.ticket.codigo}</a>
+                                      </p>
+                                    )}
+                                  </div>
+                                ))}
+                              </div>
+                            )}
+                          </div>
+                        )}
+
+                        {showTicketModalFromSolicitacao && selectedTicket && (
+                          <div className="stage-followup-modal-overlay" onClick={() => setShowTicketModalFromSolicitacao(false)}>
+                            <div className="ticket-modal-content" onClick={(event) => event.stopPropagation()}>
+                              <div className="ticket-modal-header">
+                                <div>
+                                  <p className="eyebrow">{selectedTicket.codigo}</p>
+                                  <h3>{selectedTicket.titulo}</h3>
+                                  <p className="subtitle">
+                                    {TICKET_STATUS_LABELS[selectedTicket.status]} | {TICKET_SOURCE_LABELS[selectedTicket.origem]} | Criado em {" "}
+                                    {new Date(selectedTicket.created_at).toLocaleString("pt-BR")}
+                                  </p>
+                                </div>
+                                <button type="button" className="ghost" onClick={() => setShowTicketModalFromSolicitacao(false)}>
+                                  Fechar
+                                </button>
+                              </div>
+                              <div className="ticket-modal-body">
+                                <p>
+                                  <strong>Instrumento:</strong>{" "}
+                                  {selectedTicket.instrumento
+                                    ? `${selectedTicket.instrumento.instrumento} (proposta ${selectedTicket.instrumento.proposta})`
+                                    : selectedTicket.instrumento_informado ?? "Nao informado"}
+                                </p>
+                                <p>
+                                  <strong>Responsavel:</strong> {selectedTicket.responsavel?.nome ?? "Nao atribuido"}
+                                </p>
+                                <div className="ticket-description-block">
+                                  <strong>Descricao:</strong>
+                                  <div className="ticket-description-text">{selectedTicket.descricao ?? "Sem descricao"}</div>
+                                </div>
+                                <p>
+                                  <strong>Prazo alvo:</strong>{" "}
+                                  {selectedTicket.prazo_alvo ? formatDateOnlyPtBr(selectedTicket.prazo_alvo) : "Nao definido"}
+                                </p>
+                                {selectedTicket.resolvido_em && (
+                                  <p>
+                                    <strong>Resolvido em:</strong> {formatDateOnlyPtBr(selectedTicket.resolvido_em)}
+                                  </p>
+                                )}
+                                {selectedTicket.motivo_resolucao && (
+                                  <p>
+                                    <strong>Motivo da resolucao:</strong> {selectedTicket.motivo_resolucao}
+                                  </p>
+                                )}
+                                {selectedTicket.comentarios && selectedTicket.comentarios.length > 0 && (
+                                  <div className="ticket-comments-section">
+                                    <h4>Comentarios ({selectedTicket.comentarios.length})</h4>
+                                    {selectedTicket.comentarios.map((comment) => (
+                                      <div key={comment.id} className="ticket-comment">
+                                        <div className="ticket-comment-head">
+                                          <strong>{comment.user.nome}</strong>
+                                          <span className="subtitle">
+                                            {new Date(comment.created_at).toLocaleString("pt-BR")}
+                                          </span>
+                                        </div>
+                                        <p>{comment.mensagem}</p>
+                                      </div>
+                                    ))}
+                                  </div>
+                                )}
+                                {selectedTicket.checklist_itens && selectedTicket.checklist_itens.length > 0 && (
+                                  <div className="ticket-checklist-section">
+                                    <h4>Pendencias ({selectedTicket.checklist_itens.length})</h4>
+                                    {selectedTicket.checklist_itens.map((item) => (
+                                      <div key={item.id} className="ticket-checklist-item">
+                                        <span className={item.concluido ? "checklist-done" : "checklist-pending"}>
+                                          {item.concluido ? "✅" : "⬜"}
+                                        </span>
+                                        <span>{item.descricao}</span>
+                                        {item.concluido_em && (
+                                          <span className="subtitle">
+                                            Concluido em: {new Date(item.concluido_em).toLocaleString("pt-BR")}
+                                          </span>
+                                        )}
+                                      </div>
+                                    ))}
+                                  </div>
+                                )}
+                              </div>
+                            </div>
+                          </div>
+                        )}
+
+                        {!showRepassePanel && !showWorkProgressPanel && !showSolicitacoesCaixaPanel && (
                           <div className="checklist-card">
                           <div className="checklist-head">
                             <h3>Fluxo de liberacao do recurso federal - {FLOW_TYPE_LABELS[currentFlowType]}</h3>
@@ -4688,220 +5705,14 @@ export default function App() {
               )}
             </section>
           ) : activeView === "tickets" ? (
-            <section className="dashboard">
-              <div className="card filters-card">
-                <h3>Filtros de tickets</h3>
-                <div className="filters-grid columns-5">
-                  <label>
-                    Status
-                    <select
-                      value={ticketFilters.status}
-                      onChange={(e) =>
-                        setTicketFilters((prev) => ({ ...prev, status: e.target.value as TicketStatus | "" }))
-                      }
-                    >
-                      <option value="">Todos</option>
-                      {TICKET_STATUS_OPTIONS.map((option) => (
-                        <option key={option} value={option}>
-                          {TICKET_STATUS_LABELS[option]}
-                        </option>
-                      ))}
-                    </select>
-                  </label>
-                  <label>
-                    Prioridade
-                    <select
-                      value={ticketFilters.prioridade}
-                      onChange={(e) =>
-                        setTicketFilters((prev) => ({ ...prev, prioridade: e.target.value as TicketPriority | "" }))
-                      }
-                    >
-                      <option value="">Todas</option>
-                      {TICKET_PRIORITY_OPTIONS.map((option) => (
-                        <option key={option} value={option}>
-                          {TICKET_PRIORITY_LABELS[option]}
-                        </option>
-                      ))}
-                    </select>
-                  </label>
-                  <label>
-                    Origem
-                    <select
-                      value={ticketFilters.origem}
-                      onChange={(e) =>
-                        setTicketFilters((prev) => ({ ...prev, origem: e.target.value as TicketSource | "" }))
-                      }
-                    >
-                      <option value="">Todas</option>
-                      {TICKET_SOURCE_OPTIONS.map((option) => (
-                        <option key={option} value={option}>
-                          {TICKET_SOURCE_LABELS[option]}
-                        </option>
-                      ))}
-                    </select>
-                  </label>
-                  <label>
-                    Instrumento
-                    <select
-                      value={ticketFilters.instrument_id}
-                      onChange={(e) => setTicketFilters((prev) => ({ ...prev, instrument_id: e.target.value }))}
-                    >
-                      <option value="">Todos</option>
-                      {sortedInstruments.map((item) => (
-                        <option key={item.id} value={String(item.id)}>
-                          {item.instrumento} | proposta {item.proposta}
-                        </option>
-                      ))}
-                    </select>
-                  </label>
-                  <label>
-                    Responsavel
-                    <select
-                      value={ticketFilters.responsavel_user_id}
-                      onChange={(e) =>
-                        setTicketFilters((prev) => ({ ...prev, responsavel_user_id: e.target.value }))
-                      }
-                      disabled={ticketAssignableUsers.length === 0}
-                    >
-                      <option value="">Todos</option>
-                      {ticketAssignableUsers.map((userItem) => (
-                        <option key={userItem.id} value={String(userItem.id)}>
-                          {userItem.nome} ({userItem.role})
-                        </option>
-                      ))}
-                    </select>
-                  </label>
-                  <label>
-                    Busca livre
-                    <input
-                      value={ticketFilters.q}
-                      onChange={(e) => setTicketFilters((prev) => ({ ...prev, q: e.target.value }))}
-                      placeholder="Codigo, titulo, descricao"
-                    />
-                  </label>
-                  <label className="ticket-overdue-toggle">
-                    <span>Somente atrasados</span>
-                    <input
-                      type="checkbox"
-                      checked={ticketFilters.somente_atrasados}
-                      onChange={(e) =>
-                        setTicketFilters((prev) => ({ ...prev, somente_atrasados: e.target.checked }))
-                      }
-                    />
-                  </label>
-                </div>
-                <div className="action-row">
-                  <button type="button" onClick={onApplyTicketFilters} disabled={isBusy}>
-                    Aplicar filtros
-                  </button>
-                  <button type="button" className="secondary" onClick={onClearTicketFilters} disabled={isBusy}>
-                    Limpar filtros
-                  </button>
-                  <button type="button" className="secondary" onClick={onFilterMyTickets} disabled={isBusy || !user}>
-                    Meus tickets
-                  </button>
-                </div>
-              </div>
+            <section className="dashboard ticket-helpdesk-view">
+              <div className="ticket-helpdesk-shell">
+                <aside className="card ticket-helpdesk-nav">
+                  <p className="eyebrow">Help Desk</p>
+                  <h3>Central de Tickets</h3>
+                  <p className="subtitle">Fila operacional para triagem, acompanhamento e resolucao.</p>
 
-              {canManageInstruments && (
-                <div className="card editor-card">
-                  <h3>Abrir ticket manual</h3>
-                  <form className="form-grid" onSubmit={onCreateTicket}>
-                    <div className="filters-grid columns-4">
-                      <label>
-                        Titulo *
-                        <input
-                          value={ticketForm.titulo}
-                          onChange={(e) => setTicketForm((prev) => ({ ...prev, titulo: e.target.value }))}
-                          placeholder="Ex.: Pendencia documental no instrumento"
-                          required
-                        />
-                      </label>
-                      <label>
-                        Prioridade
-                        <select
-                          value={ticketForm.prioridade}
-                          onChange={(e) =>
-                            setTicketForm((prev) => ({ ...prev, prioridade: e.target.value as TicketPriority }))
-                          }
-                        >
-                          {TICKET_PRIORITY_OPTIONS.map((option) => (
-                            <option key={option} value={option}>
-                              {TICKET_PRIORITY_LABELS[option]}
-                            </option>
-                          ))}
-                        </select>
-                      </label>
-                      <label>
-                        Prazo alvo (SLA)
-                        <input
-                          type="date"
-                          value={ticketForm.prazo_alvo}
-                          onChange={(e) => setTicketForm((prev) => ({ ...prev, prazo_alvo: e.target.value }))}
-                        />
-                      </label>
-                      <label>
-                        Instrumento (opcional)
-                        <select
-                          value={ticketForm.instrument_id}
-                          onChange={(e) => setTicketForm((prev) => ({ ...prev, instrument_id: e.target.value }))}
-                        >
-                          <option value="">Nao associado</option>
-                          {sortedInstruments.map((item) => (
-                            <option key={item.id} value={String(item.id)}>
-                              {item.instrumento} | proposta {item.proposta}
-                            </option>
-                          ))}
-                        </select>
-                      </label>
-                      <label>
-                        Instrumento informado
-                        <input
-                          value={ticketForm.instrumento_informado}
-                          onChange={(e) =>
-                            setTicketForm((prev) => ({ ...prev, instrumento_informado: e.target.value }))
-                          }
-                          placeholder="Texto livre para identificacao"
-                        />
-                      </label>
-                      <label>
-                        Responsavel inicial
-                        <select
-                          value={ticketForm.responsavel_user_id}
-                          onChange={(e) =>
-                            setTicketForm((prev) => ({ ...prev, responsavel_user_id: e.target.value }))
-                          }
-                        >
-                          <option value="">Nao atribuido</option>
-                          {ticketAssignableUsers.map((userItem) => (
-                            <option key={userItem.id} value={String(userItem.id)}>
-                              {userItem.nome} ({userItem.role})
-                            </option>
-                          ))}
-                        </select>
-                      </label>
-                    </div>
-                    <label>
-                      Descricao
-                      <textarea
-                        rows={3}
-                        value={ticketForm.descricao}
-                        onChange={(e) => setTicketForm((prev) => ({ ...prev, descricao: e.target.value }))}
-                        placeholder="Contexto do atendimento"
-                      />
-                    </label>
-                    <div className="action-row">
-                      <button type="submit" disabled={isBusy}>
-                        Criar ticket
-                      </button>
-                    </div>
-                  </form>
-                </div>
-              )}
-
-              <div className="tickets-layout">
-                <div className="card table-card">
-                  <div className="ticket-board-tabs">
+                  <div className="ticket-helpdesk-board-menu">
                     <button
                       type="button"
                       className={ticketBoardTab === "abertos" ? "ticket-board-tab active" : "ticket-board-tab"}
@@ -4925,55 +5736,344 @@ export default function App() {
                     </button>
                   </div>
 
-                  <h3>
-                    {ticketBoardTab === "abertos"
-                      ? `Fila de tickets em aberto (${openTickets.length})`
-                      : ticketBoardTab === "resolvidos"
-                        ? `Fila de tickets resolvidos (${resolvedTickets.length})`
-                        : `Fila de tickets cancelados (${canceledTickets.length})`}
-                  </h3>
-                  {visibleTickets.length === 0 ? (
-                    <p>Nenhum ticket encontrado.</p>
-                  ) : (
-                    <div className="ticket-list">
-                      {visibleTickets.map((item) => {
-                        const isSelected = selectedTicket?.id === item.id;
-                        return (
-                          <button
-                            key={item.id}
-                            type="button"
-                            className={isSelected ? "ticket-item active" : "ticket-item"}
-                            onClick={() => onSelectTicket(item.id)}
-                          >
-                            <div className="ticket-item-head">
-                              <strong>{item.codigo}</strong>
-                              <span>{TICKET_STATUS_LABELS[item.status]}</span>
-                            </div>
-                            <p>{item.titulo}</p>
-                            <div className="ticket-item-meta">
-                              <span className={`ticket-priority-chip ${item.prioridade.toLowerCase()}`}>
-                                {TICKET_PRIORITY_LABELS[item.prioridade]}
-                              </span>
-                              <span>{item.origem === "MANUAL" ? "Manual" : "Email"}</span>
-                              <span>{item.instrumento?.instrumento ?? item.instrumento_informado ?? "Sem instrumento"}</span>
-                              <span>{item.responsavel?.nome ?? "Sem responsavel"}</span>
-                            </div>
-                            <p className="subtitle">SLA: {formatTicketSla(item)}</p>
-                            <p className="subtitle">
-                              Atualizado em {new Date(item.updated_at).toLocaleString("pt-BR")}
-                            </p>
+                  <div className="ticket-helpdesk-kpis">
+                    <article>
+                      <span>Total no painel</span>
+                      <strong>{visibleTickets.length}</strong>
+                    </article>
+                    <article>
+                      <span>Alta/Critica</span>
+                      <strong>{visibleTickets.filter((item) => item.prioridade === "ALTA" || item.prioridade === "CRITICA").length}</strong>
+                    </article>
+                    <article>
+                      <span>Atrasados</span>
+                      <strong>
+                        {
+                          visibleTickets.filter((item) =>
+                            item.prazo_alvo && (item.status === "ABERTO" || item.status === "EM_ANDAMENTO")
+                              ? new Date(`${item.prazo_alvo}T00:00:00.000Z`) < new Date(new Date().toISOString().slice(0, 10) + "T00:00:00.000Z")
+                              : false
+                          ).length
+                        }
+                      </strong>
+                    </article>
+                  </div>
+
+                  <div className="ticket-helpdesk-nav-actions">
+                    <button type="button" className="secondary" onClick={() => refreshData()} disabled={isBusy}>
+                      Atualizar fila
+                    </button>
+                    {canManageInstruments && (
+                      <button
+                        type="button"
+                        onClick={() => setShowTicketCreateModal(true)}
+                      >
+                        Criar novo ticket
+                      </button>
+                    )}
+                  </div>
+                </aside>
+
+                <div className="ticket-helpdesk-main">
+                  <div className="card ticket-helpdesk-toolbar">
+                    <div className="ticket-helpdesk-toolbar-head">
+                      <h3>
+                        {ticketBoardTab === "abertos"
+                          ? `Tickets em aberto (${openTickets.length})`
+                          : ticketBoardTab === "resolvidos"
+                            ? `Tickets resolvidos (${resolvedTickets.length})`
+                            : `Tickets cancelados (${canceledTickets.length})`}
+                      </h3>
+                      <p className="subtitle">Visao tabular inspirada em helpdesk para operacao diaria.</p>
+                    </div>
+
+                    <div className="ticket-helpdesk-filters filters-grid columns-5">
+                      <label>
+                        Busca livre
+                        <input
+                          value={ticketFilters.q}
+                          onChange={(e) => setTicketFilters((prev) => ({ ...prev, q: e.target.value }))}
+                          placeholder="Codigo, titulo, descricao"
+                        />
+                      </label>
+                      <label>
+                        Status
+                        <select
+                          value={ticketFilters.status}
+                          onChange={(e) =>
+                            setTicketFilters((prev) => ({ ...prev, status: e.target.value as TicketStatus | "" }))
+                          }
+                        >
+                          <option value="">Todos</option>
+                          {TICKET_STATUS_OPTIONS.map((option) => (
+                            <option key={option} value={option}>
+                              {TICKET_STATUS_LABELS[option]}
+                            </option>
+                          ))}
+                        </select>
+                      </label>
+                      <label>
+                        Prioridade
+                        <select
+                          value={ticketFilters.prioridade}
+                          onChange={(e) =>
+                            setTicketFilters((prev) => ({ ...prev, prioridade: e.target.value as TicketPriority | "" }))
+                          }
+                        >
+                          <option value="">Todas</option>
+                          {TICKET_PRIORITY_OPTIONS.map((option) => (
+                            <option key={option} value={option}>
+                              {TICKET_PRIORITY_LABELS[option]}
+                            </option>
+                          ))}
+                        </select>
+                      </label>
+                      <label>
+                        Origem
+                        <select
+                          value={ticketFilters.origem}
+                          onChange={(e) =>
+                            setTicketFilters((prev) => ({ ...prev, origem: e.target.value as TicketSource | "" }))
+                          }
+                        >
+                          <option value="">Todas</option>
+                          {TICKET_SOURCE_OPTIONS.map((option) => (
+                            <option key={option} value={option}>
+                              {TICKET_SOURCE_LABELS[option]}
+                            </option>
+                          ))}
+                        </select>
+                      </label>
+                      <label className="ticket-overdue-toggle">
+                        <span>Somente atrasados</span>
+                        <input
+                          type="checkbox"
+                          checked={ticketFilters.somente_atrasados}
+                          onChange={(e) =>
+                            setTicketFilters((prev) => ({ ...prev, somente_atrasados: e.target.checked }))
+                          }
+                        />
+                      </label>
+                      <label>
+                        Instrumento
+                        <select
+                          value={ticketFilters.instrument_id}
+                          onChange={(e) => setTicketFilters((prev) => ({ ...prev, instrument_id: e.target.value }))}
+                        >
+                          <option value="">Todos</option>
+                          {sortedInstruments.map((item) => (
+                            <option key={item.id} value={String(item.id)}>
+                              {summarizeText(`${item.instrumento} | proposta ${item.proposta}`, 36)}
+                            </option>
+                          ))}
+                        </select>
+                      </label>
+                      <label>
+                        Responsavel
+                        <select
+                          value={ticketFilters.responsavel_user_id}
+                          onChange={(e) =>
+                            setTicketFilters((prev) => ({ ...prev, responsavel_user_id: e.target.value }))
+                          }
+                          disabled={ticketAssignableUsers.length === 0}
+                        >
+                          <option value="">Todos</option>
+                          {ticketAssignableUsers.map((userItem) => (
+                            <option key={userItem.id} value={String(userItem.id)}>
+                              {userItem.nome} ({userItem.role})
+                            </option>
+                          ))}
+                        </select>
+                      </label>
+                    </div>
+
+                    <div className="ticket-helpdesk-actions action-row">
+                      <button type="button" onClick={onApplyTicketFilters} disabled={isBusy}>
+                        Aplicar filtros
+                      </button>
+                      <button type="button" className="secondary" onClick={onClearTicketFilters} disabled={isBusy}>
+                        Limpar filtros
+                      </button>
+                      <button type="button" className="secondary" onClick={onFilterMyTickets} disabled={isBusy || !user}>
+                        Meus tickets
+                      </button>
+                    </div>
+                  </div>
+
+                  {showTicketCreateModal && canManageInstruments && (
+                    <div className="stage-followup-modal-overlay" onClick={() => setShowTicketCreateModal(false)}>
+                      <div className="stage-followup-modal ticket-create-modal" onClick={(event) => event.stopPropagation()}>
+                        <div className="stage-followup-modal-head">
+                          <h5>Abrir ticket manual</h5>
+                          <button type="button" className="ghost compact-link" onClick={() => setShowTicketCreateModal(false)}>
+                            Fechar
                           </button>
-                        );
-                      })}
+                        </div>
+                        <form className="form-grid" onSubmit={onCreateTicket}>
+                          <div className="filters-grid columns-4">
+                            <label>
+                              Titulo *
+                              <input
+                                value={ticketForm.titulo}
+                                onChange={(e) => setTicketForm((prev) => ({ ...prev, titulo: e.target.value }))}
+                                placeholder="Ex.: Pendencia documental no instrumento"
+                                required
+                              />
+                            </label>
+                            <label>
+                              Prioridade
+                              <select
+                                value={ticketForm.prioridade}
+                                onChange={(e) =>
+                                  setTicketForm((prev) => ({ ...prev, prioridade: e.target.value as TicketPriority }))
+                                }
+                              >
+                                {TICKET_PRIORITY_OPTIONS.map((option) => (
+                                  <option key={option} value={option}>
+                                    {TICKET_PRIORITY_LABELS[option]}
+                                  </option>
+                                ))}
+                              </select>
+                            </label>
+                            <label>
+                              Prazo alvo (SLA)
+                              <input
+                                type="date"
+                                value={ticketForm.prazo_alvo}
+                                onChange={(e) => setTicketForm((prev) => ({ ...prev, prazo_alvo: e.target.value }))}
+                              />
+                            </label>
+                            <label>
+                              Instrumento (opcional)
+                              <select
+                                value={ticketForm.instrument_id}
+                                onChange={(e) => setTicketForm((prev) => ({ ...prev, instrument_id: e.target.value }))}
+                              >
+                                <option value="">Nao associado</option>
+                                {sortedInstruments.map((item) => (
+                                  <option key={item.id} value={String(item.id)}>
+                                    {summarizeText(`${item.instrumento} | proposta ${item.proposta}`, 44)}
+                                  </option>
+                                ))}
+                              </select>
+                            </label>
+                            <label>
+                              Instrumento informado
+                              <input
+                                value={ticketForm.instrumento_informado}
+                                onChange={(e) =>
+                                  setTicketForm((prev) => ({ ...prev, instrumento_informado: e.target.value }))
+                                }
+                                placeholder="Texto livre para identificacao"
+                              />
+                            </label>
+                            <label>
+                              Responsavel inicial
+                              <select
+                                value={ticketForm.responsavel_user_id}
+                                onChange={(e) =>
+                                  setTicketForm((prev) => ({ ...prev, responsavel_user_id: e.target.value }))
+                                }
+                              >
+                                <option value="">Nao atribuido</option>
+                                {ticketAssignableUsers.map((userItem) => (
+                                  <option key={userItem.id} value={String(userItem.id)}>
+                                    {userItem.nome} ({userItem.role})
+                                  </option>
+                                ))}
+                              </select>
+                            </label>
+                          </div>
+                          <label>
+                            Descricao
+                            <textarea
+                              rows={3}
+                              value={ticketForm.descricao}
+                              onChange={(e) => setTicketForm((prev) => ({ ...prev, descricao: e.target.value }))}
+                              placeholder="Contexto do atendimento"
+                            />
+                          </label>
+                          <div className="action-row">
+                            <button type="submit" disabled={isBusy}>
+                              Criar ticket
+                            </button>
+                          </div>
+                        </form>
+                      </div>
                     </div>
                   )}
-                </div>
 
-                <div className="card table-card">
                   {!selectedTicket ? (
-                    <p>Selecione um ticket para ver detalhes e comentarios.</p>
+                    <div className="tickets-layout ticket-list-layout">
+                      <div className="card table-card ticket-grid-card">
+                        {visibleTickets.length === 0 ? (
+                          <p>Nenhum ticket encontrado.</p>
+                        ) : (
+                          <div className="ticket-grid-wrap">
+                            <table className="ticket-grid-table">
+                              <thead>
+                              <tr>
+                                <th>Tracking ID</th>
+                                <th>Atualizado</th>
+                                <th>Solicitante</th>
+                                <th>Assunto</th>
+                                <th>Status</th>
+                                <th>Atribuido</th>
+                                <th>Prioridade</th>
+                                <th>Prazo alvo</th>
+                                <th>SLA</th>
+                              </tr>
+                            </thead>
+                              <tbody>
+                                {visibleTickets.map((item) => (
+                                  <tr
+                                    key={item.id}
+                                    className="ticket-row"
+                                    onClick={() => onSelectTicket(item.id)}
+                                  >
+                                    <td>
+                                      <button type="button" className="ticket-row-link" onClick={() => onSelectTicket(item.id)}>
+                                        {item.codigo}
+                                      </button>
+                                    </td>
+                                    <td>{new Date(item.updated_at).toLocaleString("pt-BR")}</td>
+                                    <td>{item.criado_por.nome}</td>
+                                    <td>
+                                      <div className="ticket-row-subject">
+                                        <strong>{item.titulo}</strong>
+                                        <span>{item.instrumento?.instrumento ?? item.instrumento_informado ?? "Sem instrumento"}</span>
+                                      </div>
+                                    </td>
+                                    <td>
+                                      <span className={`ticket-status-chip ${item.status.toLowerCase()}`}>
+                                        {TICKET_STATUS_LABELS[item.status]}
+                                      </span>
+                                    </td>
+                                    <td>{item.responsavel?.nome ?? "Nao atribuido"}</td>
+                                    <td>
+                                      <span className={`ticket-priority-chip ${item.prioridade.toLowerCase()}`}>
+                                        {TICKET_PRIORITY_LABELS[item.prioridade]}
+                                      </span>
+                                    </td>
+                                    <td>{item.prazo_alvo ? formatDateOnlyPtBr(item.prazo_alvo) : "Nao definido"}</td>
+                                    <td>{formatTicketSla(item)}</td>
+                                  </tr>
+                                ))}
+                              </tbody>
+                            </table>
+                          </div>
+                        )}
+                      </div>
+                    </div>
                   ) : (
-                    <div className="ticket-detail">
+                    <div className="card table-card ticket-detail-card ticket-detail-page">
+                      <div className="ticket-detail-page-head">
+                        <button type="button" className="ghost" onClick={onCloseTicketDetail}>
+                          Voltar para fila
+                        </button>
+                        <p className="subtitle">Detalhes completos do ticket selecionado.</p>
+                      </div>
+                      <div className="ticket-detail">
                       <div>
                         <p className="eyebrow">{selectedTicket.codigo}</p>
                         <h3>{selectedTicket.titulo}</h3>
@@ -4990,18 +6090,60 @@ export default function App() {
                       </div>
 
                       <div className="details-grid">
+                        {(!selectedTicket.instrumento || !selectedTicket.instrumento_encontrado) && selectedTicket.origem === "EMAIL" && (
+                          <div className="ticket-instrument-warning">
+                            <span className="warning-icon">⚠️</span>
+                            <div>
+                              <strong>Instrumento não identificado automaticamente</strong>
+                              {selectedTicket.instrumento_informado && (
+                                <p className="subtitle">Texto identificado: {selectedTicket.instrumento_informado}</p>
+                              )}
+                            </div>
+                          </div>
+                        )}
                         <p>
                           <strong>Instrumento:</strong>{" "}
                           {selectedTicket.instrumento
                             ? `${selectedTicket.instrumento.instrumento} (proposta ${selectedTicket.instrumento.proposta})`
                             : selectedTicket.instrumento_informado ?? "Nao informado"}
                         </p>
+                        {!selectedTicket.instrumento && canManageInstruments && (
+                          <div className="ticket-instrument-associate">
+                            <label>
+                              Buscar instrumento para associar:
+                              <input
+                                type="text"
+                                value={ticketInstrumentSearch}
+                                onChange={(e) => onSearchTicketInstrument(e.target.value)}
+                                placeholder="Digite proposta, instrumento ou objeto..."
+                              />
+                            </label>
+                            {ticketInstrumentSearching && <p className="subtitle">Buscando...</p>}
+                            {ticketInstrumentResults.length > 0 && (
+                              <div className="ticket-instrument-results">
+                                {ticketInstrumentResults.map((inst) => (
+                                  <button
+                                    key={inst.id}
+                                    type="button"
+                                    className="instrument-result-item"
+                                    onClick={() => onAssociateTicketInstrument(inst.id)}
+                                    disabled={isBusy}
+                                  >
+                                    <strong>{inst.proposta || inst.instrumento || `#${inst.id}`}</strong>
+                                    <span className="subtitle">{inst.objeto}</span>
+                                  </button>
+                                ))}
+                              </div>
+                            )}
+                          </div>
+                        )}
                         <p>
                           <strong>Responsavel:</strong> {selectedTicket.responsavel?.nome ?? "Nao atribuido"}
                         </p>
-                        <p>
-                          <strong>Descricao:</strong> {selectedTicket.descricao ?? "Sem descricao"}
-                        </p>
+                        <div className="ticket-description-block">
+                          <strong>Descricao:</strong>
+                          <div className="ticket-description-text">{selectedTicket.descricao ?? "Sem descricao"}</div>
+                        </div>
                         <p>
                           <strong>Prazo alvo:</strong>{" "}
                           {selectedTicket.prazo_alvo ? formatDateOnlyPtBr(selectedTicket.prazo_alvo) : "Nao definido"}
@@ -5015,6 +6157,80 @@ export default function App() {
                           <p>
                             <strong>Motivo da resolucao:</strong> {selectedTicket.motivo_resolucao}
                           </p>
+                        )}
+                      </div>
+
+                      {selectedTicket.origem === "EMAIL" && selectedTicket.checklist_itens.length > 0 && (
+                        <div className="ticket-email-pending-box">
+                          <div className="ticket-email-pending-header">
+                            <span className="ticket-email-pending-icon">✉️</span>
+                            <div>
+                              <h4 className="ticket-email-pending-title">Pendências identificadas via email</h4>
+                              <p className="ticket-email-pending-subtitle">
+                                {selectedTicket.checklist_itens.filter((i) => i.concluido).length} de{" "}
+                                {selectedTicket.checklist_itens.length} pendência
+                                {selectedTicket.checklist_itens.length !== 1 ? "s" : ""} concluída
+                                {selectedTicket.checklist_itens.filter((i) => i.concluido).length !== 1 ? "s" : ""}
+                              </p>
+                            </div>
+                          </div>
+                          <div className="ticket-email-pending-progress">
+                            <div
+                              className="ticket-email-pending-progress-bar"
+                              style={{
+                                width: `${
+                                  selectedTicket.checklist_itens.length > 0
+                                    ? Math.round(
+                                        (selectedTicket.checklist_itens.filter((i) => i.concluido).length /
+                                          selectedTicket.checklist_itens.length) *
+                                          100
+                                      )
+                                    : 0
+                                }%`
+                              }}
+                            />
+                          </div>
+                          <div className="ticket-checklist-list">
+                            {selectedTicket.checklist_itens.map((item) => (
+                              <label key={item.id} className="ticket-email-pending-item">
+                                <input
+                                  type="checkbox"
+                                  checked={item.concluido}
+                                  onChange={(e) =>
+                                    onToggleTicketChecklistItem(selectedTicket.id, item.id, e.target.checked)
+                                  }
+                                  disabled={isBusy || !canManageInstruments}
+                                />
+                                <span className={item.concluido ? "done" : ""}>{item.descricao}</span>
+                              </label>
+                            ))}
+                          </div>
+                        </div>
+                      )}
+
+                      <div className="ticket-checklist-box">
+                        <h3>
+                          Checklist ({selectedTicket.checklist_itens.filter((item) => item.concluido).length}/
+                          {selectedTicket.checklist_itens.length})
+                        </h3>
+                        {selectedTicket.checklist_itens.length === 0 ? (
+                          <p className="subtitle">Sem checklist neste ticket.</p>
+                        ) : (
+                          <div className="ticket-checklist-list">
+                            {selectedTicket.checklist_itens.map((item) => (
+                              <label key={item.id} className="ticket-checklist-item">
+                                <input
+                                  type="checkbox"
+                                  checked={item.concluido}
+                                  onChange={(e) =>
+                                    onToggleTicketChecklistItem(selectedTicket.id, item.id, e.target.checked)
+                                  }
+                                  disabled={isBusy || !canManageInstruments}
+                                />
+                                <span className={item.concluido ? "done" : ""}>{item.descricao}</span>
+                              </label>
+                            ))}
+                          </div>
                         )}
                       </div>
 
@@ -5075,13 +6291,20 @@ export default function App() {
                               const isReopenStatus = status === "ABERTO" || status === "EM_ANDAMENTO";
                               const blockedByRole =
                                 selectedTicket.status === "RESOLVIDO" && isReopenStatus && !isAdmin;
+                              const isActive = selectedTicket.status === status;
+                              const colorClass = {
+                                ABERTO: "ticket-status-btn-aberto",
+                                EM_ANDAMENTO: "ticket-status-btn-andamento",
+                                RESOLVIDO: "ticket-status-btn-resolvido",
+                                CANCELADO: "ticket-status-btn-cancelado"
+                              }[status];
                               return (
                                 <button
                                   key={status}
                                   type="button"
-                                  className={selectedTicket.status === status ? "secondary" : "ghost"}
+                                  className={`ticket-status-btn ${colorClass}${isActive ? " active" : ""}`}
                                   onClick={() => onUpdateTicketStatus(selectedTicket.id, status)}
-                                  disabled={isBusy || selectedTicket.status === status || blockedByRole}
+                                  disabled={isBusy || isActive || blockedByRole}
                                   title={blockedByRole ? "Somente ADMIN pode reabrir ticket resolvido." : undefined}
                                 >
                                   {TICKET_STATUS_LABELS[status]}
@@ -5111,9 +6334,9 @@ export default function App() {
                       )}
 
                       <div className="ticket-comments">
-                        <h3>Comentarios ({selectedTicket.comentarios.length})</h3>
+                        <h3>Acompanhamentos ({selectedTicket.comentarios.length})</h3>
                         {selectedTicket.comentarios.length === 0 ? (
-                          <p className="subtitle">Nenhum comentario registrado.</p>
+                          <p className="subtitle">Nenhum acompanhamento registrado.</p>
                         ) : (
                           <div className="ticket-comment-list">
                             {selectedTicket.comentarios.map((comment) => (
@@ -5134,20 +6357,21 @@ export default function App() {
                               rows={3}
                               value={ticketCommentText}
                               onChange={(e) => setTicketCommentText(e.target.value)}
-                              placeholder="Adicionar comentario"
+                              placeholder="Adicionar acompanhamento"
                             />
                             <div className="action-row compact">
                               <button type="button" onClick={onAddTicketComment} disabled={isBusy}>
-                                Comentar
+                                Registrar
                               </button>
                             </div>
                           </div>
                         )}
                       </div>
+                      </div>
                     </div>
                   )}
-                </div>
-              </div>
+            </div>
+          </div>
             </section>
           ) : activeView === "auditoria" ? (
             <section className="dashboard">
@@ -5223,6 +6447,471 @@ export default function App() {
                 </div>
               </div>
             </section>
+          ) : activeView === "assinaturas" ? (
+            <section className="dashboard">
+              {signatureTab === "certificados" && (
+                <>
+                  {isAdmin && (
+                    <div className="card editor-card">
+                      <h3>Cadastrar Certificado</h3>
+                      <div className="form-grid">
+                        <div className="filters-grid columns-3">
+                          <label>
+                            Nome *
+                            <input
+                              value={certificateForm.nome}
+                              onChange={(e) => setCertificateForm((prev) => ({ ...prev, nome: e.target.value }))}
+                              placeholder="Nome de identificacao"
+                            />
+                          </label>
+                          <label>
+                            Titular *
+                            <input
+                              value={certificateForm.titular}
+                              onChange={(e) => setCertificateForm((prev) => ({ ...prev, titular: e.target.value }))}
+                              placeholder="Nome do titular"
+                            />
+                          </label>
+                          <label>
+                            CPF *
+                            <input
+                              value={certificateForm.cpf}
+                              onChange={(e) => setCertificateForm((prev) => ({ ...prev, cpf: e.target.value }))}
+                              placeholder="CPF do titular"
+                            />
+                          </label>
+                          <label>
+                            Validade *
+                            <input
+                              type="date"
+                              value={certificateForm.validade}
+                              onChange={(e) => setCertificateForm((prev) => ({ ...prev, validade: e.target.value }))}
+                            />
+                          </label>
+                          <label>
+                            Arquivo (.pfx) *
+                            <input
+                              type="file"
+                              accept=".pfx,.p12"
+                              onChange={(e) => {
+                                const file = e.target.files?.[0];
+                                if (file) {
+                                  const reader = new FileReader();
+                                  reader.onload = () => {
+                                    const base64 = (reader.result as string).split(",")[1];
+                                    setCertificateForm((prev) => ({ ...prev, arquivo: base64, arquivo_nome: file.name }));
+                                  };
+                                  reader.readAsDataURL(file);
+                                }
+                              }}
+                            />
+                          </label>
+                          <label>
+                            Senha do certificado *
+                            <input
+                              type="password"
+                              value={certificateForm.senha}
+                              onChange={(e) => setCertificateForm((prev) => ({ ...prev, senha: e.target.value }))}
+                              placeholder="Senha do arquivo PFX"
+                            />
+                          </label>
+                        </div>
+                        <button type="button" onClick={onCreateCertificate} disabled={isBusy}>
+                          Cadastrar Certificado
+                        </button>
+                      </div>
+                    </div>
+                  )}
+
+                  <div className="card table-card">
+                    <h3>Certificados Cadastrados</h3>
+                    {certificates.length === 0 ? (
+                      <p>Nenhum certificado cadastrado.</p>
+                    ) : (
+                      <div className="table-wrap">
+                        <table>
+                          <thead>
+                            <tr>
+                              <th>Nome</th>
+                              <th>Titular</th>
+                              <th>CPF</th>
+                              <th>Validade</th>
+                              <th>Status</th>
+                              {isAdmin && <th>Acoes</th>}
+                            </tr>
+                          </thead>
+                          <tbody>
+                            {certificates.map((cert) => (
+                              <tr key={cert.id}>
+                                <td>{cert.nome}</td>
+                                <td>{cert.titular}</td>
+                                <td>{cert.cpf}</td>
+                                <td>{new Date(cert.validade).toLocaleDateString("pt-BR")}</td>
+                                <td>
+                                  <span className={`status-chip ${cert.status.toLowerCase()}`}>
+                                    {cert.status}
+                                  </span>
+                                </td>
+                                {isAdmin && (
+                                  <td>
+                                    <button
+                                      type="button"
+                                      className="ghost danger"
+                                      onClick={() => onRevokeCertificate(cert.id)}
+                                      disabled={isBusy || cert.status === "REVOGADO"}
+                                    >
+                                      Revogar
+                                    </button>
+                                  </td>
+                                )}
+                              </tr>
+                            ))}
+                          </tbody>
+                        </table>
+                      </div>
+                    )}
+                  </div>
+                </>
+              )}
+
+              {signatureTab === "documentos" && (
+                <>
+                  <div className="card editor-card">
+                    <h3>Carregar Documento para Assinatura</h3>
+                    <div className="form-grid">
+                      <div className="filters-grid columns-2">
+                        <label>
+                          Titulo *
+                          <input
+                            value={documentForm.titulo}
+                            onChange={(e) => setDocumentForm((prev) => ({ ...prev, titulo: e.target.value }))}
+                            placeholder="Nome do documento"
+                          />
+                        </label>
+                        <label>
+                          Descricao
+                          <input
+                            value={documentForm.descricao}
+                            onChange={(e) => setDocumentForm((prev) => ({ ...prev, descricao: e.target.value }))}
+                            placeholder="Descricao opcional"
+                          />
+                        </label>
+                        <label>
+                          Arquivo PDF *
+                          <input
+                            ref={documentUploadInputRef}
+                            type="file"
+                            accept=".pdf,application/pdf"
+                            onChange={(e) => {
+                              const file = e.target.files?.[0];
+                              setDocumentForm((prev) => ({
+                                ...prev,
+                                arquivo: file ?? null,
+                                arquivo_nome: file?.name ?? ""
+                              }));
+                            }}
+                          />
+                          <small>{documentForm.arquivo ? `Selecionado: ${documentForm.arquivo.name}` : "Nenhum arquivo selecionado"}</small>
+                        </label>
+                      </div>
+                      <button type="button" onClick={onCreateDocument} disabled={isUploadingDocument}>
+                        {isUploadingDocument ? "Carregando..." : "Carregar Documento"}
+                      </button>
+                    </div>
+                  </div>
+
+                  <div className="card table-card">
+                    <h3>Busca Inteligente de Documentos</h3>
+                    <div className="filters-grid columns-4">
+                      <label>
+                        Buscar no conteudo
+                        <input
+                          value={documentSearchQuery}
+                          onChange={(e) => setDocumentSearchQuery(e.target.value)}
+                          placeholder="Ex.: declaracao de titularidade"
+                        />
+                      </label>
+                      <label>
+                        Status
+                        <select
+                          value={documentSearchStatus}
+                          onChange={(e) => setDocumentSearchStatus(e.target.value as "" | "PENDENTE" | "ASSINADO" | "CANCELADO")}
+                        >
+                          <option value="">Todos</option>
+                          <option value="PENDENTE">Pendente</option>
+                          <option value="ASSINADO">Assinado</option>
+                          <option value="CANCELADO">Cancelado</option>
+                        </select>
+                      </label>
+                      <label>
+                        Data de
+                        <input
+                          type="date"
+                          value={documentSearchDataDe}
+                          onChange={(e) => setDocumentSearchDataDe(e.target.value)}
+                        />
+                      </label>
+                      <label>
+                        Data ate
+                        <input
+                          type="date"
+                          value={documentSearchDataAte}
+                          onChange={(e) => setDocumentSearchDataAte(e.target.value)}
+                        />
+                      </label>
+                    </div>
+                    <div className="action-row">
+                      <button type="button" onClick={onSearchDocuments} disabled={isSearchingDocuments}>
+                        {isSearchingDocuments ? "Pesquisando..." : `Buscar ${documentSearchSemantic ? "Semantica IA" : "Lexical"}`}
+                      </button>
+                      <button
+                        type="button"
+                        className="secondary"
+                        onClick={() => setDocumentSearchSemantic((prev) => !prev)}
+                        disabled={isSearchingDocuments}
+                      >
+                        {documentSearchSemantic ? "Modo semantico ativo" : "Modo lexical ativo"}
+                      </button>
+                    </div>
+
+                    {documentSearchResults.length > 0 && (
+                      <div className="table-wrap">
+                        <table>
+                          <thead>
+                            <tr>
+                              <th>Titulo</th>
+                              <th>Trecho encontrado</th>
+                              <th>Tipo</th>
+                              <th>Score</th>
+                              <th>Indexacao</th>
+                              <th>Categoria IA</th>
+                              <th>Risco IA</th>
+                              <th>Resumo IA</th>
+                              <th>Acoes</th>
+                            </tr>
+                          </thead>
+                          <tbody>
+                            {documentSearchResults.map((result) => (
+                              <tr key={`search-${result.id}`}>
+                                <td>{result.titulo}</td>
+                                <td>{result.snippet}</td>
+                                <td>{result.searchType === "semantic" ? "Semantica" : "Lexical"}</td>
+                                <td>{result.score}</td>
+                                <td>{DOCUMENT_INDEX_STATUS_LABELS[result.indexStatus]}</td>
+                                <td>{result.aiCategory ? DOCUMENT_AI_CATEGORY_LABELS[result.aiCategory] : "-"}</td>
+                                <td>{result.aiRiskLevel ? DOCUMENT_AI_RISK_LABELS[result.aiRiskLevel] : "-"}</td>
+                                <td>{result.aiSummary ?? "-"}</td>
+                                <td>
+                                  <button
+                                    type="button"
+                                    className="button ghost"
+                                    onClick={() => onDownloadDocument(result.id, result.arquivoNome)}
+                                  >
+                                    Baixar
+                                  </button>
+                                </td>
+                              </tr>
+                            ))}
+                          </tbody>
+                        </table>
+                      </div>
+                    )}
+                  </div>
+
+                  <div className="card table-card">
+                    <h3>Documentos</h3>
+                    {documents.length === 0 ? (
+                      <p>Nenhum documento carregado.</p>
+                    ) : (
+                      <div className="table-wrap">
+                        <table>
+                          <thead>
+                            <tr>
+                              <th>Titulo</th>
+                              <th>Arquivo</th>
+                              <th>Status</th>
+                              <th>Indexacao</th>
+                              <th>Classificacao IA</th>
+                              <th>Data</th>
+                              <th>Acoes</th>
+                            </tr>
+                          </thead>
+                          <tbody>
+                            {documents.map((doc) => (
+                              <tr key={doc.id}>
+                                <td>{doc.titulo}</td>
+                                <td>{doc.arquivoNome}</td>
+                                <td>
+                                  <span className={`status-chip ${doc.status.toLowerCase()}`}>
+                                    {doc.status === "PENDENTE" ? "Pendente" : doc.status === "ASSINADO" ? "Assinado" : "Cancelado"}
+                                  </span>
+                                </td>
+                                <td>
+                                  <span className={`status-chip ${(doc.indexStatus ?? "PENDENTE").toLowerCase()}`}>
+                                    {DOCUMENT_INDEX_STATUS_LABELS[(doc.indexStatus ?? "PENDENTE") as "PENDENTE" | "PROCESSANDO" | "INDEXADO" | "ERRO"]}
+                                  </span>
+                                  {doc.indexError ? <p className="subtitle">{doc.indexError}</p> : null}
+                                </td>
+                                <td>
+                                  <p>
+                                    {doc.aiCategory ? DOCUMENT_AI_CATEGORY_LABELS[doc.aiCategory as "CONTRATO" | "OFICIO" | "RELATORIO" | "PRESTACAO_CONTAS" | "COMPROVANTE" | "OUTROS"] : "Nao classificado"}
+                                  </p>
+                                  <p className="subtitle">
+                                    {doc.aiRiskLevel
+                                      ? `Risco ${DOCUMENT_AI_RISK_LABELS[doc.aiRiskLevel as "BAIXO" | "MEDIO" | "ALTO" | "CRITICO"]}${typeof doc.aiClassificationConfidence === "number" ? ` (${Math.round(doc.aiClassificationConfidence * 100)}%)` : ""}`
+                                      : "-"}
+                                  </p>
+                                  {doc.aiInsights ? <p className="subtitle">{doc.aiInsights}</p> : null}
+                                </td>
+                                <td>{new Date(doc.createdAt).toLocaleString("pt-BR")}</td>
+                                <td>
+                                  {doc.status === "PENDENTE" && (
+                                    <button type="button" className="primary" onClick={() => onOpenSignModal(doc.id)}>
+                                      Assinar
+                                    </button>
+                                  )}
+                                  <button
+                                    type="button"
+                                    className="button ghost"
+                                    onClick={() => onDownloadDocument(doc.id, doc.arquivoNome)}
+                                  >
+                                    Baixar
+                                  </button>
+                                  <button
+                                    type="button"
+                                    className="ghost danger"
+                                    onClick={() => onDeleteDocument(doc.id, doc.status)}
+                                    disabled={deletingDocumentId === doc.id}
+                                  >
+                                    Excluir
+                                  </button>
+                                  <button
+                                    type="button"
+                                    className="ghost"
+                                    onClick={() => onReindexDocument(doc.id)}
+                                    disabled={reindexingDocumentId === doc.id}
+                                  >
+                                    {reindexingDocumentId === doc.id ? "Reindexando..." : "Reindexar"}
+                                  </button>
+                                  <button
+                                    type="button"
+                                    className="ghost"
+                                    onClick={() => onOpenDocumentQa(doc.id, doc.titulo)}
+                                  >
+                                    Perguntar IA
+                                  </button>
+                                  <button
+                                    type="button"
+                                    className="ghost"
+                                    onClick={() => onClassifyDocument(doc.id)}
+                                    disabled={classifyingDocumentId === doc.id}
+                                  >
+                                    {classifyingDocumentId === doc.id ? "Classificando..." : "Classificar IA"}
+                                  </button>
+                                </td>
+                              </tr>
+                            ))}
+                          </tbody>
+                        </table>
+                      </div>
+                    )}
+                  </div>
+                </>
+              )}
+
+              {showSignModal && (
+                <div className="stage-followup-modal-overlay" onClick={() => setShowSignModal(false)}>
+                  <div className="stage-followup-modal" onClick={(event) => event.stopPropagation()}>
+                    <div className="stage-followup-modal-head">
+                      <h5>Assinar Documento</h5>
+                      <button type="button" className="ghost compact-link" onClick={() => setShowSignModal(false)}>
+                        Fechar
+                      </button>
+                    </div>
+                    <div className="filters-grid columns-1">
+                      <label>
+                        Selecione o Certificado
+                        <select
+                          value={signCertificateId ?? ""}
+                          onChange={(e) => setSignCertificateId(Number(e.target.value))}
+                        >
+                          <option value="">Selecione...</option>
+                          {activeCertificates.map((cert) => (
+                            <option key={cert.id} value={cert.id}>
+                              {cert.nome} - {cert.titular} (CPF: {cert.cpf})
+                            </option>
+                          ))}
+                        </select>
+                      </label>
+                      <label>
+                        Senha do Certificado
+                        <input
+                          type="password"
+                          value={signPassword}
+                          onChange={(e) => setSignPassword(e.target.value)}
+                          placeholder="Digite a senha do certificado"
+                        />
+                      </label>
+                    </div>
+                    <div className="action-row compact">
+                      <button type="button" className="primary" onClick={onSignDocument} disabled={isBusy || !signCertificateId || !signPassword}>
+                        Assinar Documento
+                      </button>
+                      <button type="button" className="ghost" onClick={() => setShowSignModal(false)} disabled={isBusy}>
+                        Cancelar
+                      </button>
+                    </div>
+                  </div>
+                </div>
+              )}
+
+              {qaDocumentId !== null && (
+                <div className="stage-followup-modal-overlay" onClick={() => setQaDocumentId(null)}>
+                  <div className="stage-followup-modal" onClick={(event) => event.stopPropagation()}>
+                    <div className="stage-followup-modal-head">
+                      <h5>Perguntar IA: {qaDocumentTitle}</h5>
+                      <button type="button" className="ghost compact-link" onClick={() => setQaDocumentId(null)}>
+                        Fechar
+                      </button>
+                    </div>
+                    <div className="form-grid">
+                      <label>
+                        Pergunta
+                        <textarea
+                          rows={3}
+                          value={qaQuestion}
+                          onChange={(e) => setQaQuestion(e.target.value)}
+                          placeholder="Ex.: Qual o objeto, prazo e obrigacoes principais deste documento?"
+                        />
+                      </label>
+                      <div className="action-row compact">
+                        <button type="button" onClick={onAskDocumentQuestion} disabled={isAskingDocument}>
+                          {isAskingDocument ? "Consultando IA..." : "Perguntar"}
+                        </button>
+                      </div>
+                      {qaAnswer && (
+                        <div className="card">
+                          <h3>Resposta</h3>
+                          <p>{qaAnswer}</p>
+                          {qaSources.length > 0 && (
+                            <>
+                              <h3>Fontes usadas</h3>
+                              <ul>
+                                {qaSources.map((source) => (
+                                  <li key={`qa-source-${source.chunkIndex}`}>
+                                    Trecho {source.chunkIndex} (score {source.score}): {source.snippet}
+                                  </li>
+                                ))}
+                              </ul>
+                            </>
+                          )}
+                        </div>
+                      )}
+                    </div>
+                  </div>
+                </div>
+              )}
+            </section>
           ) : (
             <section className="dashboard">
               <div className="tab-row">
@@ -5239,6 +6928,13 @@ export default function App() {
                   onClick={() => setRelatorioTab("obras")}
                 >
                   Acompanhamento de Obras
+                </button>
+                <button
+                  type="button"
+                  className={relatorioTab === "tickets" ? "tab active" : "tab"}
+                  onClick={() => setRelatorioTab("tickets")}
+                >
+                  Tickets
                 </button>
               </div>
 
@@ -5488,7 +7184,7 @@ export default function App() {
                 </>
               )}
               </>
-              ) : (
+              ) : relatorioTab === "obras" ? (
                 <>
                   <div className="card filters-card">
                     <h3>Relatorio de acompanhamento de obras</h3>
@@ -5736,6 +7432,282 @@ export default function App() {
                                     <td>{item.data_prestacao_contas ?? "-"}</td>
                                     <td>{item.dias_para_vigencia_fim}</td>
                                     <td>{item.risco}</td>
+                                  </tr>
+                                ))
+                              )}
+                            </tbody>
+                          </table>
+                        </div>
+                      </div>
+                    </>
+                  )}
+                </>
+              ) : (
+                <>
+                  <div className="card filters-card">
+                    <h3>Relatorio de tickets</h3>
+                    <div className="filters-grid columns-4">
+                      <label>
+                        Data de
+                        <input
+                          type="date"
+                          value={ticketReportFilters.data_de}
+                          onChange={(e) =>
+                            setTicketReportFilters((prev) => ({ ...prev, data_de: e.target.value }))
+                          }
+                        />
+                      </label>
+                      <label>
+                        Data ate
+                        <input
+                          type="date"
+                          value={ticketReportFilters.data_ate}
+                          onChange={(e) =>
+                            setTicketReportFilters((prev) => ({ ...prev, data_ate: e.target.value }))
+                          }
+                        />
+                      </label>
+                      <label>
+                        Status
+                        <select
+                          value={ticketReportFilters.status}
+                          onChange={(e) =>
+                            setTicketReportFilters((prev) => ({ ...prev, status: e.target.value as TicketStatus | "" }))
+                          }
+                        >
+                          <option value="">Todos</option>
+                          {TICKET_STATUS_OPTIONS.map((option) => (
+                            <option key={option} value={option}>
+                              {TICKET_STATUS_LABELS[option]}
+                            </option>
+                          ))}
+                        </select>
+                      </label>
+                      <label>
+                        Prioridade
+                        <select
+                          value={ticketReportFilters.prioridade}
+                          onChange={(e) =>
+                            setTicketReportFilters((prev) => ({ ...prev, prioridade: e.target.value as TicketPriority | "" }))
+                          }
+                        >
+                          <option value="">Todas</option>
+                          {TICKET_PRIORITY_OPTIONS.map((option) => (
+                            <option key={option} value={option}>
+                              {TICKET_PRIORITY_LABELS[option]}
+                            </option>
+                          ))}
+                        </select>
+                      </label>
+                      <label>
+                        Origem
+                        <select
+                          value={ticketReportFilters.origem}
+                          onChange={(e) =>
+                            setTicketReportFilters((prev) => ({ ...prev, origem: e.target.value as TicketSource | "" }))
+                          }
+                        >
+                          <option value="">Todas</option>
+                          {TICKET_SOURCE_OPTIONS.map((option) => (
+                            <option key={option} value={option}>
+                              {TICKET_SOURCE_LABELS[option]}
+                            </option>
+                          ))}
+                        </select>
+                      </label>
+                      <label>
+                        Responsavel
+                        <select
+                          value={ticketReportFilters.responsavel_user_id}
+                          onChange={(e) =>
+                            setTicketReportFilters((prev) => ({ ...prev, responsavel_user_id: e.target.value }))
+                          }
+                          disabled={ticketAssignableUsers.length === 0}
+                        >
+                          <option value="">Todos</option>
+                          {ticketAssignableUsers.map((userItem) => (
+                            <option key={userItem.id} value={String(userItem.id)}>
+                              {userItem.nome} ({userItem.role})
+                            </option>
+                          ))}
+                        </select>
+                      </label>
+                      <label>
+                        Busca livre
+                        <input
+                          value={ticketReportFilters.q}
+                          onChange={(e) =>
+                            setTicketReportFilters((prev) => ({ ...prev, q: e.target.value }))
+                          }
+                          placeholder="Codigo, titulo, descricao"
+                        />
+                      </label>
+                      <label className="ticket-overdue-toggle">
+                        <span>Somente atrasados</span>
+                        <input
+                          type="checkbox"
+                          checked={ticketReportFilters.somente_atrasados}
+                          onChange={(e) =>
+                            setTicketReportFilters((prev) => ({ ...prev, somente_atrasados: e.target.checked }))
+                          }
+                        />
+                      </label>
+                    </div>
+
+                    <div className="action-row">
+                      <button type="button" onClick={onApplyTicketReportFilters} disabled={isBusy}>
+                        Gerar relatorio
+                      </button>
+                      <button type="button" className="secondary" onClick={onClearTicketReportFilters}>
+                        Limpar filtros
+                      </button>
+                      <button
+                        type="button"
+                        className="secondary"
+                        onClick={() => ticketReportData && exportTicketReportCsv(ticketReportData)}
+                        disabled={!ticketReportData}
+                      >
+                        Exportar CSV
+                      </button>
+                      <button
+                        type="button"
+                        className="secondary"
+                        onClick={() => ticketReportData && exportTicketReportExcel(ticketReportData)}
+                        disabled={!ticketReportData}
+                      >
+                        Exportar Excel
+                      </button>
+                      <button
+                        type="button"
+                        className="secondary"
+                        onClick={() => onExportTicketReportPdf("executivo")}
+                        disabled={!ticketReportData}
+                      >
+                        PDF Executivo
+                      </button>
+                      <button
+                        type="button"
+                        className="secondary"
+                        onClick={() => onExportTicketReportPdf("analitico")}
+                        disabled={!ticketReportData}
+                      >
+                        PDF Analitico
+                      </button>
+                    </div>
+                  </div>
+
+                  {!ticketReportData ? (
+                    <div className="card table-card">
+                      <p>Selecione os filtros e gere o relatorio para visualizar os tickets.</p>
+                    </div>
+                  ) : (
+                    <>
+                      <div className="report-kpi-grid">
+                        <div className="card kpi-card">
+                          <p className="eyebrow">Total</p>
+                          <h3>{ticketReportSummary.total}</h3>
+                        </div>
+                        <div className="card kpi-card">
+                          <p className="eyebrow">Em aberto</p>
+                          <h3>{ticketReportSummary.abertos}</h3>
+                        </div>
+                        <div className="card kpi-card">
+                          <p className="eyebrow">Resolvidos</p>
+                          <h3>{ticketReportSummary.resolvidos}</h3>
+                        </div>
+                        <div className="card kpi-card">
+                          <p className="eyebrow">Atrasados</p>
+                          <h3>{ticketReportSummary.atrasados}</h3>
+                        </div>
+                        <div className="card kpi-card">
+                          <p className="eyebrow">Sem atribuicao</p>
+                          <h3>{ticketReportSummary.semAtribuicao}</h3>
+                        </div>
+                        <div className="card kpi-card">
+                          <p className="eyebrow">Tempo medio resolucao</p>
+                          <h3>{ticketReportSummary.tempoMedioResolucaoDias.toFixed(1)} dia(s)</h3>
+                        </div>
+                      </div>
+
+                      <div className="report-charts-grid">
+                        <div className="card">
+                          <h3>Tickets por status</h3>
+                          <div className="report-bars">
+                            {ticketReportSummary.porStatus.map((item) => {
+                              const max = Math.max(...ticketReportSummary.porStatus.map((point) => point.quantidade), 1);
+                              const width = (item.quantidade / max) * 100;
+                              return (
+                                <div key={item.status} className="report-bar-row">
+                                  <span>{TICKET_STATUS_LABELS[item.status]}</span>
+                                  <div className="report-bar-track">
+                                    <div className="report-bar-fill" style={{ width: `${width}%` }} />
+                                  </div>
+                                  <strong>{item.quantidade}</strong>
+                                </div>
+                              );
+                            })}
+                          </div>
+                        </div>
+                        <div className="card">
+                          <h3>Top responsaveis</h3>
+                          <div className="report-bars">
+                            {ticketReportSummary.topResponsaveis.length === 0 ? (
+                              <p className="subtitle">Sem dados para o filtro atual.</p>
+                            ) : (
+                              ticketReportSummary.topResponsaveis.map((item) => {
+                                const max = Math.max(...ticketReportSummary.topResponsaveis.map((point) => point.quantidade), 1);
+                                const width = (item.quantidade / max) * 100;
+                                return (
+                                  <div key={item.nome} className="report-bar-row">
+                                    <span>{item.nome}</span>
+                                    <div className="report-bar-track">
+                                      <div className="report-bar-fill secondary" style={{ width: `${width}%` }} />
+                                    </div>
+                                    <strong>{item.quantidade}</strong>
+                                  </div>
+                                );
+                              })
+                            )}
+                          </div>
+                        </div>
+                      </div>
+
+                      <div className="card table-card">
+                        <h3>Tickets no filtro</h3>
+                        <div className="table-wrap">
+                          <table>
+                            <thead>
+                              <tr>
+                                <th>Codigo</th>
+                                <th>Titulo</th>
+                                <th>Status</th>
+                                <th>Prioridade</th>
+                                <th>Atribuido</th>
+                                <th>Origem</th>
+                                <th>Prazo alvo</th>
+                                <th>SLA</th>
+                                <th>Criado em</th>
+                                <th>Resolvido em</th>
+                              </tr>
+                            </thead>
+                            <tbody>
+                              {ticketReportData.length === 0 ? (
+                                <tr>
+                                  <td colSpan={10}>Nenhum ticket encontrado para os filtros selecionados.</td>
+                                </tr>
+                              ) : (
+                                ticketReportData.map((item) => (
+                                  <tr key={item.id}>
+                                    <td>{item.codigo}</td>
+                                    <td>{item.titulo}</td>
+                                    <td>{TICKET_STATUS_LABELS[item.status]}</td>
+                                    <td>{TICKET_PRIORITY_LABELS[item.prioridade]}</td>
+                                    <td>{item.responsavel?.nome ?? "Nao atribuido"}</td>
+                                    <td>{TICKET_SOURCE_LABELS[item.origem]}</td>
+                                    <td>{item.prazo_alvo ? formatDateOnlyPtBr(item.prazo_alvo) : "Nao definido"}</td>
+                                    <td>{formatTicketSla(item)}</td>
+                                    <td>{new Date(item.created_at).toLocaleString("pt-BR")}</td>
+                                    <td>{item.resolvido_em ? new Date(item.resolvido_em).toLocaleString("pt-BR") : "-"}</td>
                                   </tr>
                                 ))
                               )}

@@ -4,17 +4,23 @@ import { Router } from "express";
 import { authenticate, authorizeRoles } from "../../middlewares/auth";
 import {
   addTicketCommentSchema,
+  associateTicketInstrumentSchema,
   createTicketSchema,
+  ticketChecklistItemIdParamSchema,
   ticketIdParamSchema,
   ticketListQuerySchema,
+  toggleTicketChecklistItemSchema,
   updateTicketSchema
 } from "./tickets.schema";
 import {
   addTicketComment,
+  addTicketChecklistItems,
+  associateTicketToInstrument,
   createTicket,
   getTicketById,
   listAssignableUsers,
   listTickets,
+  toggleTicketChecklistItem,
   updateTicket
 } from "./tickets.service";
 import { hasValidResolutionReason, toDateOnly } from "./tickets.validation";
@@ -76,6 +82,15 @@ const mapTicket = (item: Awaited<ReturnType<typeof getTicketById>>) => {
         role: comment.user.role
       }
     })),
+    checklist_itens: item.checklistItems.map((checkItem) => ({
+      id: checkItem.id,
+      descricao: checkItem.descricao,
+      concluido: checkItem.concluido,
+      concluido_em: checkItem.concluidoEm ? checkItem.concluidoEm.toISOString() : null,
+      ordem: checkItem.ordem,
+      created_at: checkItem.createdAt.toISOString(),
+      updated_at: checkItem.updatedAt.toISOString()
+    })),
     created_at: item.createdAt.toISOString(),
     updated_at: item.updatedAt.toISOString()
   };
@@ -118,6 +133,15 @@ const mapTicketListItem = (item: Awaited<ReturnType<typeof listTickets>>[number]
     role: item.createdByUser.role
   },
   comentarios: [],
+  checklist_itens: item.checklistItems.map((checkItem) => ({
+    id: checkItem.id,
+    descricao: checkItem.descricao,
+    concluido: checkItem.concluido,
+    concluido_em: checkItem.concluidoEm ? checkItem.concluidoEm.toISOString() : null,
+    ordem: checkItem.ordem,
+    created_at: checkItem.createdAt.toISOString(),
+    updated_at: checkItem.updatedAt.toISOString()
+  })),
   created_at: item.createdAt.toISOString(),
   updated_at: item.updatedAt.toISOString()
 });
@@ -181,6 +205,7 @@ ticketsRouter.post("/", authorizeRoles(UserRole.ADMIN, UserRole.GESTOR), async (
 
   try {
     const created = await createTicket(parsed.data, { createdByUserId: req.user.id });
+    await addTicketChecklistItems(created.id, []);
     const full = await getTicketById(created.id);
     return res.status(201).json(mapTicket(full));
   } catch (error) {
@@ -273,3 +298,67 @@ ticketsRouter.post("/:id/comments", authorizeRoles(UserRole.ADMIN, UserRole.GEST
   const updated = await getTicketById(idParam.data.id);
   return res.status(201).json(mapTicket(updated));
 });
+
+ticketsRouter.patch(
+  "/:id/checklist/:itemId",
+  authorizeRoles(UserRole.ADMIN, UserRole.GESTOR),
+  async (req, res) => {
+    const idParam = ticketChecklistItemIdParamSchema.safeParse(req.params);
+    if (!idParam.success) {
+      return res.status(400).json({ message: "IDs invalidos." });
+    }
+
+    const parsed = toggleTicketChecklistItemSchema.safeParse(req.body);
+    if (!parsed.success) {
+      return res.status(422).json({ message: "Payload invalido", issues: parsed.error.flatten() });
+    }
+
+    const existing = await getTicketById(idParam.data.id);
+    if (!existing) {
+      return res.status(404).json({ message: "Ticket nao encontrado." });
+    }
+
+    try {
+      await toggleTicketChecklistItem(idParam.data.id, idParam.data.itemId, parsed.data.concluido);
+      const updated = await getTicketById(idParam.data.id);
+      return res.json(mapTicket(updated));
+    } catch (error) {
+      if (error instanceof Error && error.message === "TICKET_CHECKLIST_ITEM_NOT_FOUND") {
+        return res.status(404).json({ message: "Item de checklist nao encontrado para este ticket." });
+      }
+      return res.status(500).json({ message: "Erro interno ao atualizar checklist do ticket." });
+    }
+  }
+);
+
+ticketsRouter.patch(
+  "/:id/instrumento",
+  authorizeRoles(UserRole.ADMIN, UserRole.GESTOR),
+  async (req, res) => {
+    const idParam = ticketIdParamSchema.safeParse(req.params);
+    if (!idParam.success) {
+      return res.status(400).json({ message: "ID invalido." });
+    }
+
+    const parsed = associateTicketInstrumentSchema.safeParse(req.body);
+    if (!parsed.success) {
+      return res.status(422).json({ message: "Payload invalido", issues: parsed.error.flatten() });
+    }
+
+    const existing = await getTicketById(idParam.data.id);
+    if (!existing) {
+      return res.status(404).json({ message: "Ticket nao encontrado." });
+    }
+
+    try {
+      const result = await associateTicketToInstrument(idParam.data.id, parsed.data.instrument_id);
+      const updated = await getTicketById(idParam.data.id);
+      return res.json({ success: true, ticket: mapTicket(updated), solicitacaoCaixa: result.solicitacao });
+    } catch (error) {
+      if (error instanceof Error && error.message === "INSTRUMENT_NOT_FOUND") {
+        return res.status(422).json({ message: "Instrumento nao encontrado." });
+      }
+      return res.status(500).json({ message: "Erro interno ao associar instrumento." });
+    }
+  }
+);

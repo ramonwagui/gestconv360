@@ -287,6 +287,16 @@ export type TicketComment = {
   user: TicketUserRef;
 };
 
+export type TicketChecklistItem = {
+  id: number;
+  descricao: string;
+  concluido: boolean;
+  concluido_em: string | null;
+  ordem: number;
+  created_at: string;
+  updated_at: string;
+};
+
 export type Ticket = {
   id: number;
   codigo: string;
@@ -304,8 +314,56 @@ export type Ticket = {
   responsavel: TicketUserRef | null;
   criado_por: TicketUserRef;
   comentarios: TicketComment[];
+  checklist_itens: TicketChecklistItem[];
   created_at: string;
   updated_at: string;
+};
+
+export type DocumentIndexStatus = "PENDENTE" | "PROCESSANDO" | "INDEXADO" | "ERRO";
+export type DocumentAiCategory = "CONTRATO" | "OFICIO" | "RELATORIO" | "PRESTACAO_CONTAS" | "COMPROVANTE" | "OUTROS";
+export type DocumentAiRiskLevel = "BAIXO" | "MEDIO" | "ALTO" | "CRITICO";
+
+export type DocumentSearchResult = {
+  id: number;
+  titulo: string;
+  descricao: string | null;
+  arquivoNome: string;
+  status: "PENDENTE" | "ASSINADO" | "CANCELADO";
+  indexStatus: DocumentIndexStatus;
+  aiSummary: string | null;
+  aiKeywords: string | null;
+  aiCategory: DocumentAiCategory | null;
+  aiRiskLevel: DocumentAiRiskLevel | null;
+  aiClassificationConfidence: number | null;
+  aiInsights: string | null;
+  createdAt: string;
+  updatedAt: string;
+  criado_por: {
+    id: number;
+    nome: string;
+    email: string;
+  };
+  matched_chunks: number;
+  score: number;
+  snippet: string;
+  searchType?: "lexical" | "semantic";
+};
+
+export type DocumentSearchResponse = {
+  query: string;
+  total: number;
+  resultados: DocumentSearchResult[];
+};
+
+export type DocumentQaSource = {
+  chunkIndex: number;
+  score: number;
+  snippet: string;
+};
+
+export type DocumentQaResponse = {
+  resposta: string;
+  fontes: DocumentQaSource[];
 };
 
 export type AuditLogItem = {

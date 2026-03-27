@@ -1,6 +1,7 @@
 import { UserRole } from "@prisma/client";
-import { NextFunction, Request, Response } from "express";
+import { NextFunction, Request, RequestHandler, Response } from "express";
 import jwt from "jsonwebtoken";
+import { ZodSchema } from "zod";
 
 import { env } from "../config/env";
 
@@ -43,5 +44,18 @@ export const authorizeRoles = (...roles: UserRole[]) => {
     }
 
     return next();
+  };
+};
+
+export const validateBody = (schema: ZodSchema): RequestHandler => {
+  return (req: Request, res: Response, next: NextFunction) => {
+    try {
+      req.body = schema.parse(req.body);
+      next();
+    } catch (error: any) {
+      return res.status(400).json({
+        message: error.errors?.[0]?.message || "Dados invalidos"
+      });
+    }
   };
 };

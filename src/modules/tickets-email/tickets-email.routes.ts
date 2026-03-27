@@ -14,11 +14,23 @@ ticketsEmailRouter.get("/status", async (_req, res) => {
   return res.json(overview);
 });
 
-ticketsEmailRouter.post("/sync", async (_req, res) => {
+ticketsEmailRouter.post("/sync", async (req, res) => {
   try {
-    const result = await runGmailTicketIngestion();
+    const reprocessProcessed =
+      req.query.reprocess_processed === "true" || req.body?.reprocess_processed === true;
+    const maxMessagesRaw = req.query.max_messages ?? req.body?.max_messages;
+    const maxMessagesNumber = Number(maxMessagesRaw);
+    const maxMessages = Number.isFinite(maxMessagesNumber) ? maxMessagesNumber : undefined;
+
+    const result = await runGmailTicketIngestion({
+      reprocessProcessed,
+      maxMessages
+    });
+
     return res.json({
-      message: "Sincronizacao de tickets por email executada.",
+      message: reprocessProcessed
+        ? "Sincronizacao de tickets por email executada com reprocessamento."
+        : "Sincronizacao de tickets por email executada.",
       result
     });
   } catch (error) {
