@@ -23,6 +23,28 @@ const optionalPositiveInt = z.preprocess((value) => {
   return value;
 }, z.coerce.number().int().positive().optional());
 
+const optionalBooleanFromQuery = z.preprocess((value) => {
+  if (value === undefined || value === null || value === "") {
+    return undefined;
+  }
+
+  if (typeof value === "boolean") {
+    return value;
+  }
+
+  if (typeof value === "string") {
+    const normalized = value.trim().toLowerCase();
+    if (normalized === "true" || normalized === "1") {
+      return true;
+    }
+    if (normalized === "false" || normalized === "0") {
+      return false;
+    }
+  }
+
+  return value;
+}, z.boolean().optional());
+
 export const repasseReportQuerySchema = z
   .object({
     convenete_id: z.coerce.number().int().positive(),
@@ -50,7 +72,7 @@ export const obraReportQuerySchema = z
     convenete_id: optionalPositiveInt,
     instrumento_id: optionalPositiveInt,
     status: instrumentStatusSchema.optional(),
-    ativo: z.coerce.boolean().optional().default(true),
+    ativo: optionalBooleanFromQuery.default(true),
     data_de: optionalDate,
     data_ate: optionalDate
   })

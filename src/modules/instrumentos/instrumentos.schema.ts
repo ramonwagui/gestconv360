@@ -60,6 +60,35 @@ const optionalConveneteId = z.preprocess((value) => {
   return value;
 }, z.coerce.number().int().positive().optional());
 
+const optionalMoney = z.preprocess((value) => {
+  if (value === null || value === undefined || value === "") {
+    return undefined;
+  }
+  return value;
+}, z.coerce.number().min(0).optional());
+
+const optionalBooleanFromQuery = z.preprocess((value) => {
+  if (value === undefined || value === null || value === "") {
+    return undefined;
+  }
+
+  if (typeof value === "boolean") {
+    return value;
+  }
+
+  if (typeof value === "string") {
+    const normalized = value.trim().toLowerCase();
+    if (normalized === "true" || normalized === "1") {
+      return true;
+    }
+    if (normalized === "false" || normalized === "0") {
+      return false;
+    }
+  }
+
+  return value;
+}, z.boolean().optional());
+
 const instrumentBaseSchema = z.object({
   proposta: z.string().min(1).max(40),
   instrumento: z.string().min(1).max(40),
@@ -81,6 +110,9 @@ const instrumentBaseSchema = z.object({
   status: instrumentStatusSchema.default("EM_ELABORACAO"),
   responsavel: optionalText,
   orgao_executor: optionalText,
+  empresa_vencedora: optionalText,
+  cnpj_vencedora: optionalText,
+  valor_vencedor: optionalMoney,
   observacoes: optionalText
 });
 
@@ -113,7 +145,8 @@ export const listQuerySchema = z.object({
   status: instrumentStatusSchema.optional(),
   concedente: z.string().optional(),
   convenete_id: optionalConveneteId,
-  ativo: z.coerce.boolean().optional().default(true),
+  sync_repasses_desembolsos: optionalBooleanFromQuery.default(false),
+  ativo: optionalBooleanFromQuery.default(true),
   vigencia_de: dateString.optional(),
   vigencia_ate: dateString.optional()
 });

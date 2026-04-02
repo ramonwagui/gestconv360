@@ -56,10 +56,14 @@ export type Instrument = {
   agencia: string | null;
   conta: string | null;
   fluxo_tipo: InstrumentFlowType;
-  convenete_id: number | null;
+  proponente_id: number | null;
+  convenete_id?: number | null;
   status: InstrumentStatus;
   responsavel: string | null;
   orgao_executor: string | null;
+  empresa_vencedora: string | null;
+  cnpj_vencedora: string | null;
+  valor_vencedor: number | null;
   observacoes: string | null;
   ativo: boolean;
   created_at: string;
@@ -69,7 +73,9 @@ export type Instrument = {
 export type InstrumentFilters = {
   status: InstrumentStatus | "";
   concedente: string;
-  convenete_id: string;
+  proponente_id: string;
+  convenete_id?: string;
+  sync_repasses_desembolsos?: "true" | "false";
   ativo: "true" | "false";
   vigencia_de: string;
   vigencia_ate: string;
@@ -93,9 +99,13 @@ export type InstrumentPayload = {
   conta?: string;
   fluxo_tipo?: InstrumentFlowType;
   convenete_id?: number;
+  proponente_id?: number;
   status: InstrumentStatus;
   responsavel?: string;
   orgao_executor?: string;
+  empresa_vencedora?: string;
+  cnpj_vencedora?: string;
+  valor_vencedor?: number;
   observacoes?: string;
 };
 
@@ -366,6 +376,45 @@ export type DocumentQaResponse = {
   fontes: DocumentQaSource[];
 };
 
+export type DocumentAiRequestStatus = "ABERTA" | "ATENDIDA" | "CANCELADA";
+export type DocumentAiRequestPriority = "BAIXA" | "MEDIA" | "ALTA" | "URGENTE";
+
+export type DocumentAiRequestItem = {
+  id: number;
+  titulo: string;
+  descricao: string | null;
+  prioridade: DocumentAiRequestPriority;
+  status: DocumentAiRequestStatus;
+  prazo: string | null;
+  createdAt: string;
+  updatedAt: string;
+  total_documentos: number;
+  solicitado_por: {
+    id: number;
+    nome: string;
+    email: string;
+  };
+  atendido_por: {
+    id: number;
+    nome: string;
+    email: string;
+  } | null;
+  documentos: Array<{
+    id: number;
+    titulo: string;
+    arquivoNome: string;
+    status: "PENDENTE" | "ASSINADO";
+    createdAt: string;
+  }>;
+  solicitacao_externa: {
+    token: string;
+    ativo: boolean;
+    expira_em: string;
+    created_at: string;
+    link_publico: string;
+  } | null;
+};
+
 export type AuditLogItem = {
   id: number;
   instrumento_id: number;
@@ -393,6 +442,8 @@ export type Convenete = {
   updated_at: string;
 };
 
+export type Proponente = Convenete;
+
 export type ConvenetePayload = {
   nome: string;
   cnpj: string;
@@ -405,10 +456,32 @@ export type ConvenetePayload = {
   email: string;
 };
 
+export type ProponentePayload = ConvenetePayload;
+
+export type ConveneteProponenteSugestaoItem = {
+  cnpj: string;
+  nome_proponente: string;
+  uf: string | null;
+  cidade: string | null;
+};
+
+export type ProponenteSugestaoItem = ConveneteProponenteSugestaoItem;
+
+export type ProponenteImportacaoResumo = {
+  total_encontrado: number;
+  criados: number;
+  atualizados: number;
+  ignorados: number;
+  erros: number;
+};
+
 export type RepasseReportFilters = {
-  convenete_id: number;
-  convenete_nome: string;
-  convenete_cnpj: string;
+  proponente_id: number;
+  proponente_nome: string;
+  proponente_cnpj: string;
+  convenete_id?: number;
+  convenete_nome?: string;
+  convenete_cnpj?: string;
   instrumento_id: number | null;
   data_de: string | null;
   data_ate: string | null;
@@ -483,7 +556,8 @@ export type RepasseReportResponse = {
 };
 
 export type ObraReportFilters = {
-  convenete_id: number | null;
+  proponente_id: number | null;
+  convenete_id?: number | null;
   instrumento_id: number | null;
   status: InstrumentStatus | null;
   ativo: boolean;
@@ -515,8 +589,10 @@ export type ObraReportInstrument = {
   instrumento: string;
   objeto: string;
   status: InstrumentStatus;
-  convenete_id: number | null;
-  convenete_nome: string | null;
+  proponente_id: number | null;
+  proponente_nome: string | null;
+  convenete_id?: number | null;
+  convenete_nome?: string | null;
   orgao_concedente: string;
   banco: string | null;
   agencia: string | null;
@@ -543,4 +619,207 @@ export type ObraReportResponse = {
     obras_por_status: ObraReportByStatusPoint[];
   };
   instrumentos: ObraReportInstrument[];
+};
+
+export type TransferenciaEspecialPlanoAcaoItem = {
+  id_plano_acao: number;
+  codigo_plano_acao: string;
+  ano_plano_acao: number;
+  modalidade_plano_acao: string;
+  situacao_plano_acao: string;
+  cnpj_beneficiario_plano_acao: string;
+  nome_beneficiario_plano_acao: string;
+  uf_beneficiario_plano_acao: string;
+  nome_parlamentar_emenda_plano_acao: string | null;
+  valor_custeio_plano_acao: number;
+  valor_investimento_plano_acao: number;
+  id_programa: number;
+};
+
+export type TransferenciaEspecialPlanoAcaoResponse = {
+  itens: TransferenciaEspecialPlanoAcaoItem[];
+  paginacao: {
+    pagina: number;
+    tamanho_pagina: number;
+    total: number;
+    total_paginas: number;
+    tem_proxima: boolean;
+    tem_anterior: boolean;
+  };
+  cache: {
+    ttl_ms: number;
+    em_cache: boolean;
+    atualizado_em: string;
+  };
+};
+
+export type TransferenciaDiscricionariaItem = {
+  id: number;
+  nr_proposta: string | null;
+  nr_convenio: string | null;
+  uf: string | null;
+  cnpj: string | null;
+  nome_proponente: string | null;
+  natureza_juridica: string | null;
+  situacao_proposta: string | null;
+  situacao_convenio: string | null;
+  situacao_contratacao: string | null;
+  objeto: string | null;
+  ano_referencia: number | null;
+  dia_assin_conv: string | null;
+  dia_inic_vigencia: string | null;
+  dia_fim_vigencia: string | null;
+  dt_aprovacao_proposta: string | null;
+  dt_conclusao_prestacao_contas: string | null;
+  valor_global_conv: number | null;
+  valor_desembolsado_conv: number | null;
+  valor_pagamentos: number | null;
+  valor_tributos: number | null;
+  total_gasto: number | null;
+  quantidade_convenios: number | null;
+  qtd_tas_convenio: number | null;
+  qtd_dias_prorroga: number | null;
+  valor_contrapartida_financeira: number | null;
+  dias_para_vencimento: number | null;
+  link_acesso_livre: string | null;
+  fonte_arquivo: string;
+};
+
+export type TransferenciaDiscricionariaResponse = {
+  itens: TransferenciaDiscricionariaItem[];
+  paginacao: {
+    pagina: number;
+    tamanho_pagina: number;
+    total: number;
+    total_paginas: number;
+    tem_proxima: boolean;
+    tem_anterior: boolean;
+  };
+  sincronizacao: {
+    data_carga_fonte: string | null;
+    atualizado_em: string | null;
+    status: string;
+    detalhe: string | null;
+    total_registros: number;
+  };
+};
+
+export type TransferenciaDiscricionariaSyncState = {
+  data_carga_fonte: string | null;
+  atualizado_em: string | null;
+  status: string;
+  detalhe: string | null;
+  total_registros: number;
+};
+
+export type TransferenciaDiscricionariaSyncResult = {
+  skipped: boolean;
+  data_carga_fonte: string;
+  arquivos_processados: string[];
+  total_registros: number;
+  status: "ok" | "partial";
+  detalhe: string | null;
+};
+
+export type TransferenciaDiscricionariaFiltrosResponse = {
+  ufs: string[];
+  situacoes_proposta: string[];
+  situacoes_convenio: string[];
+};
+
+export type TransferenciaDiscricionariaProponenteSugestaoItem = {
+  cnpj: string;
+  nome_proponente: string;
+};
+
+export type TransferenciaDiscricionariaProponenteSugestaoResponse = {
+  itens: TransferenciaDiscricionariaProponenteSugestaoItem[];
+};
+
+export type TransferenciaDiscricionariaDesembolsoItem = {
+  id: number;
+  id_desembolso: number | null;
+  nr_convenio: string | null;
+  data_desembolso: string | null;
+  dt_ult_desembolso: string | null;
+  ano_desembolso: number | null;
+  mes_desembolso: number | null;
+  qtd_dias_sem_desembolso: number | null;
+  nr_siafi: string | null;
+  ug_emitente_dh: string | null;
+  observacao_dh: string | null;
+  vl_desembolsado: number | null;
+  fonte_arquivo: string;
+};
+
+export type TransferenciaDiscricionariaDesembolsoResponse = {
+  itens: TransferenciaDiscricionariaDesembolsoItem[];
+  paginacao: {
+    pagina: number;
+    tamanho_pagina: number;
+    total: number;
+    total_paginas: number;
+    tem_proxima: boolean;
+    tem_anterior: boolean;
+  };
+  resumo: {
+    nr_convenio: string;
+    total_desembolsos: number;
+    valor_total_desembolsado: number;
+  };
+  sincronizacao: {
+    data_carga_fonte: string | null;
+    atualizado_em: string | null;
+    status: string;
+    detalhe: string | null;
+    total_registros: number;
+  };
+};
+
+export type TransferenciaDiscricionariaDesembolsoProponenteItem = {
+  id: number;
+  id_desembolso: number | null;
+  cnpj_proponente: string | null;
+  nome_proponente: string | null;
+  nr_convenio: string | null;
+  objeto: string | null;
+  valor_contrapartida_financeira: number | null;
+  uf: string | null;
+  municipio: string | null;
+  data_desembolso: string | null;
+  dt_ult_desembolso: string | null;
+  ano_desembolso: number | null;
+  mes_desembolso: number | null;
+  qtd_dias_sem_desembolso: number | null;
+  nr_siafi: string | null;
+  ug_emitente_dh: string | null;
+  observacao_dh: string | null;
+  vl_desembolsado: number | null;
+  fonte_arquivo: string;
+};
+
+export type TransferenciaDiscricionariaDesembolsoProponenteResponse = {
+  itens: TransferenciaDiscricionariaDesembolsoProponenteItem[];
+  paginacao: {
+    pagina: number;
+    tamanho_pagina: number;
+    total: number;
+    total_paginas: number;
+    tem_proxima: boolean;
+    tem_anterior: boolean;
+  };
+  resumo: {
+    cnpj: string | null;
+    nome_proponente: string | null;
+    total_desembolsos: number;
+    total_convenios: number;
+    valor_total_desembolsado: number;
+  };
+  sincronizacao: {
+    data_carga_fonte: string | null;
+    atualizado_em: string | null;
+    status: string;
+    detalhe: string | null;
+    total_registros: number;
+  };
 };

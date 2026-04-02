@@ -1,6 +1,6 @@
 import fs from "fs";
 import OpenAI from "openai";
-import * as pdfParseLib from "pdf-parse";
+import { PDFParse } from "pdf-parse";
 
 import {
   DocumentAiCategory,
@@ -14,8 +14,15 @@ import { prisma } from "../../lib/prisma";
 
 const CHUNK_SIZE = 900;
 const CHUNK_OVERLAP = 120;
-const pdfParse = ((pdfParseLib as unknown as { default?: (buffer: Buffer) => Promise<{ text?: string }> }).default ??
-  (pdfParseLib as unknown as (buffer: Buffer) => Promise<{ text?: string }>));
+const extractTextFromPdf = async (buffer: Buffer) => {
+  const parser = new PDFParse({ data: buffer });
+  try {
+    const result = await parser.getText();
+    return result.text ?? "";
+  } finally {
+    await parser.destroy().catch(() => undefined);
+  }
+};
 
 type DocumentSearchFilters = {
   q: string;
@@ -95,6 +102,180 @@ const getSnippet = (content: string, q: string) => {
   const prefix = start > 0 ? "..." : "";
   const suffix = end < content.length ? "..." : "";
   return `${prefix}${content.slice(start, end).trim()}${suffix}`;
+};
+
+const normalizeForSearch = (value: string) =>
+  value
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .toLowerCase();
+
+const extractCurrencyValues = (value: string) => {
+  const matches = value.match(/R\$\s?\d{1,3}(?:\.\d{3})*,\d{2}/g);
+  return matches ?? [];
+};
+
+const parseCurrencyBr = (value: string) => {
+  const numeric = value.replace(/R\$\s?/g, "").replace(/\./g, "").replace(",", ".").trim();
+  const parsed = Number(numeric);
+  return Number.isFinite(parsed) ? parsed : null;
+};
+
+const scoreByKeywords = (source: string, keywords: string[]) => {
+  let score = 0;
+  for (const keyword of keywords) {
+    if (source.includes(keyword)) {
+      score += 1;
+    }
+  }
+  return score;
+};
+
+const classifyDocumentHeuristic = (titulo: string, text: string): DocumentClassification => {
+  const source = normalizeForSearch(`${titulo}\n${text}`);
+
+  const categoryCandidates: Array<{ category: DocumentAiCategory; score: number }> = [
+    {
+      category: DocumentAiCategory.CONTRATO,
+      score: scoreByKeywords(source, [
+        "contrato",
+        "clausula",
+        "contratante",
+        "contratada",
+        "vigencia",
+        "objeto contratual"
+      ])
+    },
+    {
+      category: DocumentAiCategory.OFICIO,
+      score: scoreByKeywords(source, ["oficio", "senhor", "encaminho", "atenciosamente", "comunicamos"])
+    },
+    {
+      category: DocumentAiCategory.RELATORIO,
+      score: scoreByKeywords(source, ["relatorio", "analise", "resultado", "indicadores", "acompanhamento"])
+    },
+    {
+      category: DocumentAiCategory.PRESTACAO_CONTAS,
+      score: scoreByKeywords(source, [
+        "prestacao de contas",
+        "execucao financeira",
+        "balancete",
+        "demonstrativo",
+        "receita",
+        "glosa"
+      ])
+    },
+    {
+      category: DocumentAiCategory.COMPROVANTE,
+      score: scoreByKeywords(source, [
+        "declaracao de contrapartida",
+        "declaracao",
+        "declaro",
+        "comprovante",
+        "certidao",
+        "nota fiscal",
+        "recibo"
+      ])
+    }
+  ];
+
+  const bestCategory = categoryCandidates.sort((a, b) => b.score - a.score)[0];
+  const category = bestCategory.score > 0 ? bestCategory.category : DocumentAiCategory.OUTROS;
+
+  let riskLevel: DocumentAiRiskLevel = DocumentAiRiskLevel.BAIXO;
+  const criticalHits = scoreByKeywords(source, ["fraude", "desvio", "tomada de contas", "improbidade", "dano ao erario"]);
+  const highHits = scoreByKeywords(source, [
+    "irregularidade",
+    "inadimplencia",
+    "suspensao",
+    "bloqueio",
+    "pendencia grave",
+    "glosa"
+  ]);
+  const mediumHits = scoreByKeywords(source, [
+    "pendencia",
+    "atraso",
+    "notificacao",
+    "ressalva",
+    "revisao",
+    "inconsistencia"
+  ]);
+
+  if (criticalHits > 0) {
+    riskLevel = DocumentAiRiskLevel.CRITICO;
+  } else if (highHits > 0) {
+    riskLevel = DocumentAiRiskLevel.ALTO;
+  } else if (mediumHits > 0) {
+    riskLevel = DocumentAiRiskLevel.MEDIO;
+  }
+
+  const values = extractCurrencyValues(text)
+    .map(parseCurrencyBr)
+    .filter((item): item is number => item !== null);
+  const maxValue = values.length > 0 ? Math.max(...values) : 0;
+
+  if (riskLevel === DocumentAiRiskLevel.BAIXO && maxValue >= 1_000_000) {
+    riskLevel = DocumentAiRiskLevel.MEDIO;
+  }
+
+  const confidenceBase = category === DocumentAiCategory.OUTROS ? 0.45 : 0.68;
+  const confidenceBoost = Math.min(bestCategory.score, 5) * 0.05;
+  const confidence = Math.max(0, Math.min(0.95, confidenceBase + confidenceBoost));
+
+  const insights = [
+    `Classificacao heuristica: categoria ${category}, risco ${riskLevel}.`,
+    bestCategory.score > 0 ? `Ocorrencias de termos-chave da categoria: ${bestCategory.score}.` : "Sem termos fortes de categoria; classificado como OUTROS.",
+    maxValue > 0 ? `Maior valor monetario identificado: R$ ${maxValue.toLocaleString("pt-BR", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}.` : "Nenhum valor monetario relevante identificado."
+  ].join(" ");
+
+  return {
+    category,
+    riskLevel,
+    confidence,
+    insights: insights.slice(0, 1800)
+  };
+};
+
+const buildHeuristicAnswer = (question: string, ranked: RankedChunk[], allChunks: RankedChunk[]) => {
+  const normalizedQuestion = normalizeForSearch(question);
+  const asksValue = normalizedQuestion.includes("valor") || normalizedQuestion.includes("quanto");
+  if (!asksValue) {
+    return null;
+  }
+
+  const mentionsCounterpart =
+    normalizedQuestion.includes("contrapartida") ||
+    normalizedQuestion.includes("financeira") ||
+    normalizedQuestion.includes("aporte");
+
+  const source = [...ranked, ...allChunks.filter((chunk) => !ranked.some((rankedChunk) => rankedChunk.chunkIndex === chunk.chunkIndex))];
+
+  const weighted = source
+    .map((item) => {
+      const normalizedContent = normalizeForSearch(item.content);
+      const hasCounterpart =
+        normalizedContent.includes("contrapartida") || normalizedContent.includes("financeira");
+      const values = extractCurrencyValues(item.content);
+      return {
+        item,
+        values,
+        score: item.score + (hasCounterpart ? 8 : 0)
+      };
+    })
+    .filter((item) => item.values.length > 0)
+    .sort((a, b) => b.score - a.score);
+
+  if (weighted.length === 0) {
+    return null;
+  }
+
+  const best =
+    mentionsCounterpart && weighted.some((entry) => normalizeForSearch(entry.item.content).includes("contrapartida"))
+      ? weighted.find((entry) => normalizeForSearch(entry.item.content).includes("contrapartida")) ?? weighted[0]
+      : weighted[0];
+
+  const value = best.values[0];
+  return `O valor informado no documento e ${value}.`;
 };
 
 const parseJsonSafe = <T>(raw: string): T | null => {
@@ -263,7 +444,7 @@ const generateSummary = async (titulo: string, text: string) => {
 const classifyDocument = async (titulo: string, text: string): Promise<DocumentClassification> => {
   const client = getClassificationClient();
   if (!client) {
-    return { category: null, riskLevel: null, confidence: null, insights: null };
+    return classifyDocumentHeuristic(titulo, text);
   }
 
   try {
@@ -316,7 +497,7 @@ const classifyDocument = async (titulo: string, text: string): Promise<DocumentC
       insights: parsed.insights ? String(parsed.insights).trim().slice(0, 1800) : null
     };
   } catch {
-    return { category: null, riskLevel: null, confidence: null, insights: null };
+    return classifyDocumentHeuristic(titulo, text);
   }
 };
 
@@ -481,8 +662,8 @@ const runIndexDocument = async (documentId: number) => {
     }
 
     const buffer = fs.readFileSync(document.arquivoPath);
-    const extracted = await pdfParse(buffer);
-    let normalized = normalizeText(extracted.text ?? "");
+    const extractedText = await extractTextFromPdf(buffer);
+    let normalized = normalizeText(extractedText);
 
     if (!normalized) {
       const ocrText = await extractTextWithOcrSpace(buffer);
@@ -616,12 +797,20 @@ export const searchDocumentContent = async (filters: DocumentSearchFilters) => {
     return [];
   }
 
+  const terms = splitTerms(q);
+
   const limit = Math.min(Math.max(filters.limit ?? 30, 1), 100);
   const whereDoc = buildWhereDoc(filters);
 
+  const contentFilters: Array<{ content: { contains: string } }> = [];
+  contentFilters.push({ content: { contains: q } });
+  for (const term of terms) {
+    contentFilters.push({ content: { contains: term } });
+  }
+
   const chunkMatches = await prisma.documentChunk.findMany({
     where: {
-      content: { contains: q },
+      OR: contentFilters,
       document: whereDoc
     },
     include: {
@@ -878,6 +1067,23 @@ export const answerDocumentQuestion = async (documentId: number, question: strin
 
   const client = getQaClient();
   if (!client) {
+    const heuristic = buildHeuristicAnswer(question, ranked, doc.chunks.map((item) => ({
+      chunkIndex: item.chunkIndex,
+      content: item.content,
+      score: 0,
+      embedding: parseEmbedding(item.embeddingVector)
+    })));
+    if (heuristic) {
+      return {
+        resposta: heuristic,
+        fontes: ranked.slice(0, 5).map((item) => ({
+          chunkIndex: item.chunkIndex,
+          score: Number((item.score * 100).toFixed(2)),
+          snippet: getSnippet(item.content, question)
+        }))
+      };
+    }
+
     return {
       resposta: `Nao foi possivel usar IA para responder agora. Trechos relevantes:\n\n${ranked
         .slice(0, 3)
@@ -937,6 +1143,23 @@ export const answerDocumentQuestion = async (documentId: number, question: strin
       fontes: selectedSources
     };
   } catch {
+    const heuristic = buildHeuristicAnswer(question, ranked, doc.chunks.map((item) => ({
+      chunkIndex: item.chunkIndex,
+      content: item.content,
+      score: 0,
+      embedding: parseEmbedding(item.embeddingVector)
+    })));
+    if (heuristic) {
+      return {
+        resposta: heuristic,
+        fontes: ranked.slice(0, 5).map((item) => ({
+          chunkIndex: item.chunkIndex,
+          score: Number((item.score * 100).toFixed(2)),
+          snippet: getSnippet(item.content, question)
+        }))
+      };
+    }
+
     return {
       resposta: `Nao foi possivel gerar resposta estruturada da IA. Trechos recomendados:\n\n${ranked
         .slice(0, 3)

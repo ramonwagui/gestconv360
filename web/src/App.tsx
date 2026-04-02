@@ -4,23 +4,24 @@ import {
   askDocumentQuestion,
   addTicketComment,
   addWorkMeasurementBulletin,
-  addInstrumentRepasse,
   addChecklistItem,
   associateTicketInstrument,
   createUserAdmin,
   seedDemoDataAdmin,
   createChecklistExternalLink,
   deactivateChecklistExternalLink as deactivateChecklistExternalLinkApi,
-  createConvenete,
+  createConveneteFromProponente as createProponenteFromBase,
   createCertificate,
+  createDocumentAiRequest,
+  createDocumentAiRequestPublicLink,
   classifyDocument,
   createDocument,
   createTicket,
   createInstrument,
   deleteWorkMeasurementBulletin,
-  deleteInstrumentRepasse,
-  deleteConvenete,
+  deleteConvenete as deleteProponente,
   deleteDocument,
+  deactivateDocumentAiRequestPublicLink,
   deactivateInstrument,
   deleteChecklistItem,
   downloadChecklistExternalFile,
@@ -32,12 +33,22 @@ import {
   getMyProfile,
   getObraReport,
   getRepasseReport,
+  getTransferenciasDiscricionarias,
+  getTransferenciasDiscricionariasDesembolsosPorProponente,
+  getTransferenciasDiscricionariasDesembolsos,
+  getTransferenciasDiscricionariasFiltros,
+  getTransferenciasDiscricionariasProponenteSugestoes,
+  getTransferenciasDiscricionariasSyncStatus,
+  getTransferenciasEspeciaisPlanoAcao,
   getTicketById,
   getWorkProgress,
   healthCheck,
   listAuditLogs,
   listDocuments,
-  listConvenetes,
+  listConvenetes as listProponentes,
+  searchConveneteProponentes as searchProponentesDaBase,
+  reimportarInstrumentosProponente,
+  reimportarInstrumentosTodosProponentes,
   listDeadlineAlerts,
   listInstruments,
   listInstrumentRepasses,
@@ -46,6 +57,7 @@ import {
   listUsersAdmin,
   listSolicitacoesCaixa,
   listCertificates,
+  listDocumentAiRequests,
   login,
   removeMyAvatar,
   createStageFollowUp,
@@ -56,10 +68,11 @@ import {
   searchDocumentsSemantic,
   searchInstrumentos,
   signDocument,
+  syncTransferenciasDiscricionarias,
   updateUserAdmin,
   updateChecklistItem,
-  updateConvenete,
   updateTicket,
+  updateDocumentAiRequest,
   updateWorkProgress,
   updateInstrument,
   uploadMyAvatar
@@ -70,8 +83,11 @@ import type {
   ChecklistItem,
   ChecklistItemStatus,
   ChecklistSummary,
-  Convenete,
-  ConvenetePayload,
+  Proponente,
+  ProponenteSugestaoItem,
+  DocumentAiRequestItem,
+  DocumentAiRequestPriority,
+  DocumentAiRequestStatus,
   DeadlineAlertItem,
   DocumentSearchResult,
   Instrument,
@@ -81,12 +97,18 @@ import type {
   InstrumentStatus,
   ManagedUser,
   ObraReportResponse,
+  TransferenciaDiscricionariaFiltrosResponse,
+  TransferenciaDiscricionariaDesembolsoResponse,
+  TransferenciaDiscricionariaDesembolsoProponenteResponse,
+  TransferenciaDiscricionariaProponenteSugestaoItem,
+  TransferenciaDiscricionariaResponse,
   Ticket,
   TicketPriority,
   TicketSource,
   TicketStatus,
   Role,
   RepasseReportResponse,
+  TransferenciaEspecialPlanoAcaoResponse,
   StageFollowUp,
   User,
   WorkProgress,
@@ -149,6 +171,24 @@ const DOCUMENT_AI_RISK_LABELS: Record<"BAIXO" | "MEDIO" | "ALTO" | "CRITICO", st
   ALTO: "Alto",
   CRITICO: "Critico"
 };
+
+const DOCUMENT_REQUEST_STATUS_LABELS: Record<DocumentAiRequestStatus, string> = {
+  ABERTA: "Aberta",
+  ATENDIDA: "Atendida",
+  CANCELADA: "Cancelada"
+};
+
+const DOCUMENT_REQUEST_PRIORITY_LABELS: Record<DocumentAiRequestPriority, string> = {
+  BAIXA: "Baixa",
+  MEDIA: "Media",
+  ALTA: "Alta",
+  URGENTE: "Urgente"
+};
+
+const DOCUMENT_REQUEST_PRIORITY_OPTIONS: DocumentAiRequestPriority[] = ["BAIXA", "MEDIA", "ALTA", "URGENTE"];
+const MAX_CONVENIOS_DESEMBOLSO_PDF = 30;
+const TRANSFERENCIAS_PAGE_SIZE_MAX = 100;
+const DESEMBOLSOS_PAGE_SIZE_MAX = 200;
 
 const FLOW_TYPE_OPTIONS: InstrumentFlowType[] = ["OBRA", "AQUISICAO_EQUIPAMENTOS", "EVENTOS"];
 
@@ -236,19 +276,19 @@ const emptyStageFollowUps = (): Record<WorkflowStage, StageFollowUp[]> => ({
   ACOMPANHAMENTO_OBRA: []
 });
 
-type MenuView = "dashboard" | "instrumentos" | "convenetes" | "usuarios" | "auditoria" | "tickets" | "relatorios" | "assinaturas";
+type MenuView = "dashboard" | "instrumentos" | "proponentes" | "usuarios" | "auditoria" | "tickets" | "relatorios" | "assinaturas";
 type StageFollowUpFilter = "TODOS" | "SO_MEUS" | "COM_ANEXO" | "COM_TEXTO";
 type ReportPdfMode = "executivo" | "analitico";
 
 type ReportFilters = {
-  convenete_id: string;
+  proponente_id: string;
   instrumento_id: string;
   data_de: string;
   data_ate: string;
 };
 
 type ObraReportFilters = {
-  convenete_id: string;
+  proponente_id: string;
   instrumento_id: string;
   status: InstrumentStatus | "";
   ativo: "true" | "false";
@@ -256,7 +296,55 @@ type ObraReportFilters = {
   data_ate: string;
 };
 
-type RelatorioTab = "repasses" | "obras" | "tickets";
+type TransferenciasEspeciaisFilters = {
+  cnpj: string;
+  nome_beneficiario: string;
+  uf: string;
+  ano: string;
+  situacao: string;
+  codigo_plano_acao: string;
+  parlamentar: string;
+  page_size: string;
+};
+
+type TransferenciasDiscricionariasFilters = {
+  cnpj: string;
+  nome_proponente: string;
+  uf: string;
+  municipio: string;
+  ano: string;
+  vigencia_a_vencer_dias: "" | "30" | "60" | "90";
+  situacao_proposta: string;
+  situacao_convenio: string;
+  nr_convenio: string;
+  nr_proposta: string;
+  tipo_ente: "" | "estado" | "municipio";
+  page_size: string;
+};
+
+type TransferenciasDiscricionariasDesembolsoFilters = {
+  nr_convenio: string;
+  ano: string;
+  mes: string;
+  page_size: string;
+};
+
+type TransferenciasDiscricionariasProponenteDesembolsoFilters = {
+  cnpj: string;
+  nome_proponente: string;
+  ano: string;
+  mes: string;
+  page_size: string;
+};
+
+type TransferenciasDiscricionariasTab = "convenios" | "proponente";
+
+type RelatorioTab =
+  | "repasses"
+  | "obras"
+  | "tickets"
+  | "transferencias_especiais"
+  | "transferencias_discricionarias";
 type TicketBoardTab = "abertos" | "resolvidos" | "cancelados";
 type SignatureTab = "certificados" | "documentos";
 
@@ -296,7 +384,11 @@ const STAGE_FOLLOW_UP_FILTER_LABELS: Record<StageFollowUpFilter, string> = {
   COM_TEXTO: "Com texto"
 };
 
-type ConveneteForm = ConvenetePayload;
+type ProponenteCadastroState = {
+  busca: string;
+  cnpj_selecionado: string;
+};
+
 type AdminUserForm = {
   nome: string;
   email: string;
@@ -321,10 +413,13 @@ type InstrumentForm = {
   agencia: string;
   conta: string;
   fluxo_tipo: InstrumentFlowType;
-  convenete_id: string;
+  proponente_id: string;
   status: InstrumentStatus;
   responsavel: string;
   orgao_executor: string;
+  empresa_vencedora: string;
+  cnpj_vencedora: string;
+  valor_vencedor: string;
   observacoes: string;
 };
 
@@ -513,27 +608,70 @@ const getInitials = (name: string | null | undefined, email: string) => {
 const blankFilters = (): InstrumentFilters => ({
   status: "",
   concedente: "",
-  convenete_id: "",
+  proponente_id: "",
+  sync_repasses_desembolsos: "false",
   ativo: "true",
   vigencia_de: "",
   vigencia_ate: ""
 });
 
 const emptyReportFilters = (): ReportFilters => ({
-  convenete_id: "",
+  proponente_id: "",
   instrumento_id: "",
   data_de: "",
   data_ate: ""
 });
 
 const emptyObraReportFilters = (): ObraReportFilters => ({
-  convenete_id: "",
+  proponente_id: "",
   instrumento_id: "",
   status: "",
   ativo: "true",
   data_de: "",
   data_ate: ""
 });
+
+const emptyTransferenciasEspeciaisFilters = (): TransferenciasEspeciaisFilters => ({
+  cnpj: "",
+  nome_beneficiario: "",
+  uf: "",
+  ano: "",
+  situacao: "",
+  codigo_plano_acao: "",
+  parlamentar: "",
+  page_size: "20"
+});
+
+const emptyTransferenciasDiscricionariasFilters = (): TransferenciasDiscricionariasFilters => ({
+  cnpj: "",
+  nome_proponente: "",
+  uf: "",
+  municipio: "",
+  ano: "",
+  vigencia_a_vencer_dias: "",
+  situacao_proposta: "",
+  situacao_convenio: "",
+  nr_convenio: "",
+  nr_proposta: "",
+  tipo_ente: "",
+  page_size: "20"
+});
+
+const emptyTransferenciasDiscricionariasDesembolsoFilters = (): TransferenciasDiscricionariasDesembolsoFilters => ({
+  nr_convenio: "",
+  ano: "",
+  mes: "",
+  page_size: "50"
+});
+
+const emptyTransferenciasDiscricionariasProponenteDesembolsoFilters =
+  (): TransferenciasDiscricionariasProponenteDesembolsoFilters => ({
+    cnpj: "",
+    nome_proponente: "",
+    ano: "",
+    mes: "",
+    page_size: "100"
+  });
 
 const emptyTicketFilters = (): TicketFilters => ({
   status: "",
@@ -583,23 +721,19 @@ const emptyInstrumentForm = (): InstrumentForm => ({
   agencia: "",
   conta: "",
   fluxo_tipo: "OBRA",
-  convenete_id: "",
+  proponente_id: "",
   status: "EM_ELABORACAO",
   responsavel: "",
   orgao_executor: "",
+  empresa_vencedora: "",
+  cnpj_vencedora: "",
+  valor_vencedor: formatCurrencyInput(0),
   observacoes: ""
 });
 
-const emptyConveneteForm = (): ConveneteForm => ({
-  nome: "",
-  cnpj: "",
-  endereco: "",
-  bairro: "",
-  cep: "",
-  uf: "",
-  cidade: "",
-  tel: "",
-  email: ""
+const emptyProponenteCadastroState = (): ProponenteCadastroState => ({
+  busca: "",
+  cnpj_selecionado: ""
 });
 
 const emptyAdminUserForm = (): AdminUserForm => ({
@@ -691,8 +825,9 @@ const withLoadedRepasses = async (authToken: string, instrument: Instrument): Pr
 const toPayload = (form: InstrumentForm): InstrumentPayload => {
   const valorRepasse = parseCurrencyInput(form.valor_repasse);
   const valorContrapartida = parseCurrencyInput(form.valor_contrapartida);
+  const valorVencedor = parseCurrencyInput(form.valor_vencedor);
 
-  if (Number.isNaN(valorRepasse) || Number.isNaN(valorContrapartida)) {
+  if (Number.isNaN(valorRepasse) || Number.isNaN(valorContrapartida) || Number.isNaN(valorVencedor)) {
     throw new Error("Valores de repasse/contrapartida invalidos.");
   }
 
@@ -721,10 +856,13 @@ const toPayload = (form: InstrumentForm): InstrumentPayload => {
     agencia: asOptional(form.agencia),
     conta: asOptional(form.conta),
     fluxo_tipo: form.fluxo_tipo,
-    convenete_id: asOptionalNumber(form.convenete_id),
+    proponente_id: asOptionalNumber(form.proponente_id),
     status: form.status,
     responsavel: asOptional(form.responsavel),
     orgao_executor: asOptional(form.orgao_executor),
+    empresa_vencedora: asOptional(form.empresa_vencedora),
+    cnpj_vencedora: asOptional(form.cnpj_vencedora),
+    valor_vencedor: valorVencedor > 0 ? valorVencedor : undefined,
     observacoes: asOptional(form.observacoes)
   };
 };
@@ -746,14 +884,106 @@ const fromInstrumentToForm = (item: Instrument): InstrumentForm => ({
   agencia: item.agencia ?? "",
   conta: item.conta ?? "",
   fluxo_tipo: item.fluxo_tipo,
-  convenete_id: item.convenete_id ? String(item.convenete_id) : "",
+  proponente_id: item.proponente_id ? String(item.proponente_id) : item.convenete_id ? String(item.convenete_id) : "",
   status: item.status,
   responsavel: item.responsavel ?? "",
   orgao_executor: item.orgao_executor ?? "",
+  empresa_vencedora: item.empresa_vencedora ?? "",
+  cnpj_vencedora: item.cnpj_vencedora ?? "",
+  valor_vencedor: formatCurrencyInput(item.valor_vencedor ?? 0),
   observacoes: item.observacoes ?? ""
 });
 
 const formatCurrency = (value: number) => value.toLocaleString("pt-BR", { style: "currency", currency: "BRL" });
+
+const formatCnpj = (value: string) => {
+  const digits = value.replace(/\D/g, "").slice(0, 14);
+  if (digits.length <= 2) return digits;
+  if (digits.length <= 5) return `${digits.slice(0, 2)}.${digits.slice(2)}`;
+  if (digits.length <= 8) return `${digits.slice(0, 2)}.${digits.slice(2, 5)}.${digits.slice(5)}`;
+  if (digits.length <= 12) return `${digits.slice(0, 2)}.${digits.slice(2, 5)}.${digits.slice(5, 8)}/${digits.slice(8)}`;
+  return `${digits.slice(0, 2)}.${digits.slice(2, 5)}.${digits.slice(5, 8)}/${digits.slice(8, 12)}-${digits.slice(12)}`;
+};
+
+const normalizeReadableText = (value: string | null | undefined) => {
+  if (value === null || value === undefined) {
+    return value;
+  }
+  const hasSuspiciousEncoding = /[ÃÂ�\u0080-\u009F]/.test(value);
+  if (!hasSuspiciousEncoding) {
+    return value;
+  }
+
+  try {
+    const bytes = Uint8Array.from(Array.from(value).map((char) => char.charCodeAt(0) & 0xff));
+    const repaired = new TextDecoder("utf-8").decode(bytes);
+    if (repaired.includes("\uFFFD")) {
+      return value.replace(/[\u0080-\u009F]/g, "");
+    }
+    return repaired.replace(/[\u0080-\u009F]/g, "");
+  } catch {
+    return value.replace(/[\u0080-\u009F]/g, "");
+  }
+};
+
+const parseConvenioList = (value: string) => {
+  const set = new Set<string>();
+  for (const part of value.split(/[\n,;]+/)) {
+    const cleaned = part.trim();
+    if (cleaned !== "") {
+      set.add(cleaned);
+    }
+  }
+  return Array.from(set);
+};
+
+type DesembolsoParcelaItem = {
+  id: number;
+  id_desembolso: number | null;
+  nr_convenio: string | null;
+  data_desembolso: string | null;
+};
+
+const buildDesembolsoParcelaMap = (items: DesembolsoParcelaItem[]) => {
+  const groups = new Map<string, DesembolsoParcelaItem[]>();
+
+  for (const item of items) {
+    const convenioKey = item.nr_convenio?.trim() ? item.nr_convenio.trim() : `sem-convenio-${item.id}`;
+    const current = groups.get(convenioKey);
+    if (current) {
+      current.push(item);
+    } else {
+      groups.set(convenioKey, [item]);
+    }
+  }
+
+  const parcelaById = new Map<number, number>();
+
+  for (const [, groupItems] of groups) {
+    const sorted = [...groupItems].sort((a, b) => {
+      const dateA = a.data_desembolso ?? "9999-12-31";
+      const dateB = b.data_desembolso ?? "9999-12-31";
+      if (dateA !== dateB) {
+        return dateA.localeCompare(dateB);
+      }
+
+      const idA = a.id_desembolso ?? a.id;
+      const idB = b.id_desembolso ?? b.id;
+      return idA - idB;
+    });
+
+    sorted.forEach((item, index) => {
+      parcelaById.set(item.id, index + 1);
+    });
+  }
+
+  return parcelaById;
+};
+
+const getReportLogoUrl = () => new URL("/api/v1/public/brand-logo", window.location.origin).toString();
+
+const getDeferredPrintScript = () =>
+  `<script>(function(){let printed=false;const run=()=>{if(printed)return;printed=true;setTimeout(()=>window.print(),120);};const img=document.getElementById("report-logo");if(!img){run();return;}if(img.complete){run();return;}img.addEventListener("load",run,{once:true});img.addEventListener("error",run,{once:true});setTimeout(run,2000);})();</script>`;
 
 const toCsvCell = (value: string | number | boolean | null | undefined) => {
   const safe = String(value ?? "").replace(/"/g, '""');
@@ -834,12 +1064,15 @@ const exportRepasseReportCsv = (report: RepasseReportResponse) => {
   const url = URL.createObjectURL(blob);
   const link = document.createElement("a");
   link.href = url;
-  link.download = `relatorio-repasses-${report.filtros.convenete_id}-${todayDate()}.csv`;
+  link.download = `relatorio-repasses-${report.filtros.proponente_id ?? report.filtros.convenete_id}-${todayDate()}.csv`;
   link.click();
   URL.revokeObjectURL(url);
 };
 
 const exportRepasseReportExcel = (report: RepasseReportResponse) => {
+  const proponenteNome = report.filtros.proponente_nome ?? report.filtros.convenete_nome;
+  const proponenteCnpj = report.filtros.proponente_cnpj ?? report.filtros.convenete_cnpj;
+
   const repasseRows = report.repasses
     .map(
       (item) =>
@@ -854,18 +1087,21 @@ const exportRepasseReportExcel = (report: RepasseReportResponse) => {
     )
     .join("");
 
-  const html = `<!doctype html><html><head><meta charset="utf-8" /></head><body><h3>Resumo</h3><table border="1"><tbody><tr><td>Convenete</td><td>${report.filtros.convenete_nome}</td></tr><tr><td>CNPJ</td><td>${report.filtros.convenete_cnpj}</td></tr><tr><td>Valor repassado no periodo</td><td>${report.kpis.valor_repassado_periodo}</td></tr><tr><td>Quantidade de repasses</td><td>${report.kpis.quantidade_repasses}</td></tr><tr><td>% repassado</td><td>${report.kpis.percentual_repassado.toFixed(2)}%</td></tr></tbody></table><h3>Repasses</h3><table border="1"><thead><tr><th>ID</th><th>Instrumento ID</th><th>Proposta</th><th>Instrumento</th><th>Data</th><th>Valor</th><th>Empresa vencedora</th></tr></thead><tbody>${repasseRows}</tbody></table><h3>Instrumentos</h3><table border="1"><thead><tr><th>ID</th><th>Proposta</th><th>Instrumento</th><th>Status</th><th>Orgao concedente</th><th>Banco</th><th>Agencia</th><th>Conta</th><th>Prestacao de contas</th><th>Empresa vencedora</th><th>Valor pactuado</th><th>Valor ja repassado</th><th>Repassado no periodo</th><th>Saldo</th></tr></thead><tbody>${instrumentoRows}</tbody></table></body></html>`;
+  const html = `<!doctype html><html><head><meta charset="utf-8" /></head><body><h3>Resumo</h3><table border="1"><tbody><tr><td>Proponente</td><td>${proponenteNome}</td></tr><tr><td>CNPJ</td><td>${proponenteCnpj}</td></tr><tr><td>Valor repassado no periodo</td><td>${report.kpis.valor_repassado_periodo}</td></tr><tr><td>Quantidade de repasses</td><td>${report.kpis.quantidade_repasses}</td></tr><tr><td>% repassado</td><td>${report.kpis.percentual_repassado.toFixed(2)}%</td></tr></tbody></table><h3>Repasses</h3><table border="1"><thead><tr><th>ID</th><th>Instrumento ID</th><th>Proposta</th><th>Instrumento</th><th>Data</th><th>Valor</th><th>Empresa vencedora</th></tr></thead><tbody>${repasseRows}</tbody></table><h3>Instrumentos</h3><table border="1"><thead><tr><th>ID</th><th>Proposta</th><th>Instrumento</th><th>Status</th><th>Orgao concedente</th><th>Banco</th><th>Agencia</th><th>Conta</th><th>Prestacao de contas</th><th>Empresa vencedora</th><th>Valor pactuado</th><th>Valor ja repassado</th><th>Repassado no periodo</th><th>Saldo</th></tr></thead><tbody>${instrumentoRows}</tbody></table></body></html>`;
 
   const blob = new Blob([html], { type: "application/vnd.ms-excel;charset=utf-8;" });
   const url = URL.createObjectURL(blob);
   const link = document.createElement("a");
   link.href = url;
-  link.download = `relatorio-repasses-${report.filtros.convenete_id}-${todayDate()}.xls`;
+  link.download = `relatorio-repasses-${report.filtros.proponente_id ?? report.filtros.convenete_id}-${todayDate()}.xls`;
   link.click();
   URL.revokeObjectURL(url);
 };
 
 const exportRepasseReportPdf = (report: RepasseReportResponse, mode: ReportPdfMode) => {
+  const proponenteNome = report.filtros.proponente_nome ?? report.filtros.convenete_nome;
+  const proponenteCnpj = report.filtros.proponente_cnpj ?? report.filtros.convenete_cnpj;
+
   const popup = window.open("", "_blank");
   if (!popup) {
     return;
@@ -884,7 +1120,10 @@ const exportRepasseReportPdf = (report: RepasseReportResponse, mode: ReportPdfMo
     )
     .join("");
 
-  popup.document.write(`<!doctype html><html><head><meta charset="utf-8" /><title>Relatorio de repasses</title><style>body{font-family:Segoe UI,Arial,sans-serif;padding:24px;color:#102a43}.report-head{display:flex;align-items:center;justify-content:space-between;gap:12px;margin-bottom:14px}.report-head img{max-width:180px;height:auto;display:block}h1,h2{margin:0 0 12px}table{width:100%;border-collapse:collapse;margin-top:12px}th,td{border:1px solid #cbd5e1;padding:8px;font-size:12px;text-align:left}.kpi{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:10px;margin:16px 0}.kpi div{border:1px solid #cbd5e1;border-radius:8px;padding:10px}</style></head><body><div class="report-head"><img src="/api/v1/public/brand-logo" alt="NC Convenios" /><h1>Relatorio de repasses (${mode})</h1></div><p><strong>Convenete:</strong> ${report.filtros.convenete_nome} (${report.filtros.convenete_cnpj})</p><p><strong>Periodo:</strong> ${report.filtros.data_de ?? "inicio"} ate ${report.filtros.data_ate ?? "hoje"}</p><div class="kpi"><div><strong>Repassado no periodo</strong><br/>${formatCurrency(report.kpis.valor_repassado_periodo)}</div><div><strong>Qtd repasses</strong><br/>${report.kpis.quantidade_repasses}</div><div><strong>Valor pactuado</strong><br/>${formatCurrency(report.kpis.valor_pactuado)}</div><div><strong>% repassado</strong><br/>${report.kpis.percentual_repassado.toFixed(2)}%</div></div>${mode === "analitico" ? `<h2>Instrumentos</h2><table><thead><tr><th>Instrumento</th><th>Status</th><th>Orgao concedente</th><th>Banco</th><th>Agencia</th><th>Conta</th><th>Prestacao de contas</th><th>Pactuado</th><th>Ja repassado</th><th>Saldo</th></tr></thead><tbody>${instrumentRows}</tbody></table>` : ""}<h2>Repasses</h2><table><thead><tr><th>Data</th><th>Instrumento</th><th>Valor</th><th>Empresa vencedora</th></tr></thead><tbody>${repasseRows}</tbody></table><script>window.print()</script></body></html>`);
+  const logoUrl = getReportLogoUrl();
+  const printScript = getDeferredPrintScript();
+
+  popup.document.write(`<!doctype html><html><head><meta charset="utf-8" /><title>Relatorio de repasses</title><style>body{font-family:Segoe UI,Arial,sans-serif;padding:24px;color:#102a43}.report-head{display:flex;align-items:center;justify-content:space-between;gap:12px;margin-bottom:14px}.report-head img{max-width:180px;height:auto;display:block}h1,h2{margin:0 0 12px}table{width:100%;border-collapse:collapse;margin-top:12px}th,td{border:1px solid #cbd5e1;padding:8px;font-size:12px;text-align:left}.kpi{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:10px;margin:16px 0}.kpi div{border:1px solid #cbd5e1;border-radius:8px;padding:10px}</style></head><body><div class="report-head"><img id="report-logo" src="${logoUrl}" alt="NC Convenios" /><h1>Relatorio de repasses (${mode})</h1></div><p><strong>Proponente:</strong> ${proponenteNome} (${proponenteCnpj})</p><p><strong>Periodo:</strong> ${report.filtros.data_de ?? "inicio"} ate ${report.filtros.data_ate ?? "hoje"}</p><div class="kpi"><div><strong>Repassado no periodo</strong><br/>${formatCurrency(report.kpis.valor_repassado_periodo)}</div><div><strong>Qtd repasses</strong><br/>${report.kpis.quantidade_repasses}</div><div><strong>Valor pactuado</strong><br/>${formatCurrency(report.kpis.valor_pactuado)}</div><div><strong>% repassado</strong><br/>${report.kpis.percentual_repassado.toFixed(2)}%</div></div>${mode === "analitico" ? `<h2>Instrumentos</h2><table><thead><tr><th>Instrumento</th><th>Status</th><th>Orgao concedente</th><th>Banco</th><th>Agencia</th><th>Conta</th><th>Prestacao de contas</th><th>Pactuado</th><th>Ja repassado</th><th>Saldo</th></tr></thead><tbody>${instrumentRows}</tbody></table>` : ""}<h2>Repasses</h2><table><thead><tr><th>Data</th><th>Instrumento</th><th>Valor</th><th>Empresa vencedora</th></tr></thead><tbody>${repasseRows}</tbody></table>${printScript}</body></html>`);
   popup.document.close();
 };
 
@@ -961,7 +1200,10 @@ const exportObraReportPdf = (report: ObraReportResponse, mode: ReportPdfMode) =>
     )
     .join("");
 
-  popup.document.write(`<!doctype html><html><head><meta charset="utf-8" /><title>Relatorio de obras</title><style>body{font-family:Segoe UI,Arial,sans-serif;padding:24px;color:#102a43}.report-head{display:flex;align-items:center;justify-content:space-between;gap:12px;margin-bottom:14px}.report-head img{max-width:180px;height:auto;display:block}h1,h2{margin:0 0 12px}table{width:100%;border-collapse:collapse;margin-top:12px}th,td{border:1px solid #cbd5e1;padding:8px;font-size:12px;text-align:left}.kpi{display:grid;grid-template-columns:repeat(5,minmax(0,1fr));gap:10px;margin:16px 0}.kpi div{border:1px solid #cbd5e1;border-radius:8px;padding:10px}</style></head><body><div class="report-head"><img src="/api/v1/public/brand-logo" alt="NC Convenios" /><h1>Relatorio de obras (${mode})</h1></div><p><strong>Periodo:</strong> ${report.filtros.data_de ?? "inicio"} ate ${report.filtros.data_ate ?? "hoje"}</p><div class="kpi"><div><strong>Obras monitoradas</strong><br/>${report.kpis.obras_monitoradas}</div><div><strong>% medio da obra</strong><br/>${report.kpis.percentual_medio_obra.toFixed(2)}%</div><div><strong>Boletins no periodo</strong><br/>${formatCurrency(report.kpis.valor_total_boletins_periodo)}</div><div><strong>Repasses no periodo</strong><br/>${formatCurrency(report.kpis.valor_total_repasses_periodo)}</div><div><strong>Risco alto</strong><br/>${report.kpis.obras_risco_alto}</div></div>${mode === "analitico" ? `<h2>Instrumentos</h2><table><thead><tr><th>Instrumento</th><th>Objeto</th><th>Status</th><th>% obra</th><th>Dias vigencia fim</th><th>Risco</th><th>Boletins periodo</th><th>Repasses periodo</th></tr></thead><tbody>${instrumentRows}</tbody></table>` : ""}<script>window.print()</script></body></html>`);
+  const logoUrl = getReportLogoUrl();
+  const printScript = getDeferredPrintScript();
+
+  popup.document.write(`<!doctype html><html><head><meta charset="utf-8" /><title>Relatorio de obras</title><style>body{font-family:Segoe UI,Arial,sans-serif;padding:24px;color:#102a43}.report-head{display:flex;align-items:center;justify-content:space-between;gap:12px;margin-bottom:14px}.report-head img{max-width:180px;height:auto;display:block}h1,h2{margin:0 0 12px}table{width:100%;border-collapse:collapse;margin-top:12px}th,td{border:1px solid #cbd5e1;padding:8px;font-size:12px;text-align:left}.kpi{display:grid;grid-template-columns:repeat(5,minmax(0,1fr));gap:10px;margin:16px 0}.kpi div{border:1px solid #cbd5e1;border-radius:8px;padding:10px}</style></head><body><div class="report-head"><img id="report-logo" src="${logoUrl}" alt="NC Convenios" /><h1>Relatorio de obras (${mode})</h1></div><p><strong>Periodo:</strong> ${report.filtros.data_de ?? "inicio"} ate ${report.filtros.data_ate ?? "hoje"}</p><div class="kpi"><div><strong>Obras monitoradas</strong><br/>${report.kpis.obras_monitoradas}</div><div><strong>% medio da obra</strong><br/>${report.kpis.percentual_medio_obra.toFixed(2)}%</div><div><strong>Boletins no periodo</strong><br/>${formatCurrency(report.kpis.valor_total_boletins_periodo)}</div><div><strong>Repasses no periodo</strong><br/>${formatCurrency(report.kpis.valor_total_repasses_periodo)}</div><div><strong>Risco alto</strong><br/>${report.kpis.obras_risco_alto}</div></div>${mode === "analitico" ? `<h2>Instrumentos</h2><table><thead><tr><th>Instrumento</th><th>Objeto</th><th>Status</th><th>% obra</th><th>Dias vigencia fim</th><th>Risco</th><th>Boletins periodo</th><th>Repasses periodo</th></tr></thead><tbody>${instrumentRows}</tbody></table>` : ""}${printScript}</body></html>`);
   popup.document.close();
 };
 
@@ -1034,6 +1276,151 @@ const exportTicketReportExcel = (items: Ticket[]) => {
   URL.revokeObjectURL(url);
 };
 
+const exportTransferenciasEspeciaisCsv = (report: TransferenciaEspecialPlanoAcaoResponse) => {
+  const columns = [
+    "id_plano_acao",
+    "codigo_plano_acao",
+    "ano_plano_acao",
+    "modalidade_plano_acao",
+    "situacao_plano_acao",
+    "nome_beneficiario_plano_acao",
+    "uf_beneficiario_plano_acao",
+    "cnpj_beneficiario_plano_acao",
+    "nome_parlamentar_emenda_plano_acao",
+    "valor_custeio_plano_acao",
+    "valor_investimento_plano_acao",
+    "id_programa"
+  ] as const;
+  type CsvColumn = (typeof columns)[number];
+
+  const header = columns.map((col) => toCsvCell(col)).join(";");
+  const rows = report.itens.map((item) => {
+    const row = item as unknown as Record<CsvColumn, string | number | null>;
+    return columns.map((col) => toCsvCell(row[col])).join(";");
+  });
+
+  const csv = [header, ...rows].join("\n");
+  const blob = new Blob([csv], { type: "text/csv;charset=utf-8;" });
+  const url = URL.createObjectURL(blob);
+  const link = document.createElement("a");
+  link.href = url;
+  link.download = `relatorio-transferencias-especiais-p${report.paginacao.pagina}-${todayDate()}.csv`;
+  link.click();
+  URL.revokeObjectURL(url);
+};
+
+const exportTransferenciasEspeciaisPdf = (
+  report: TransferenciaEspecialPlanoAcaoResponse,
+  mode: ReportPdfMode = "analitico"
+) => {
+  const popup = window.open("", "_blank");
+  if (!popup) {
+    return;
+  }
+
+  const totalCusteio = report.itens.reduce((acc, item) => acc + item.valor_custeio_plano_acao, 0);
+  const totalInvestimento = report.itens.reduce((acc, item) => acc + item.valor_investimento_plano_acao, 0);
+
+  const rows = report.itens
+    .map(
+      (item) =>
+        `<tr><td>${item.id_plano_acao}</td><td>${item.codigo_plano_acao}</td><td>${item.ano_plano_acao}</td><td>${item.situacao_plano_acao}</td><td>${item.nome_beneficiario_plano_acao}</td><td>${item.uf_beneficiario_plano_acao}</td><td>${item.cnpj_beneficiario_plano_acao}</td><td>${item.nome_parlamentar_emenda_plano_acao ?? "-"}</td><td style="text-align:right">${formatCurrency(item.valor_custeio_plano_acao)}</td><td style="text-align:right">${formatCurrency(item.valor_investimento_plano_acao)}</td></tr>`
+    )
+    .join("");
+
+  const logoUrl = getReportLogoUrl();
+  const printScript = getDeferredPrintScript();
+
+  popup.document.write(`<!doctype html><html><head><meta charset="utf-8" /><title>Transferencias especiais</title><style>body{font-family:Segoe UI,Arial,sans-serif;padding:24px;color:#102a43}.report-head{display:flex;align-items:center;justify-content:space-between;gap:12px;margin-bottom:14px}.report-head img{max-width:180px;height:auto;display:block}h1,h2{margin:0 0 12px}table{width:100%;border-collapse:collapse;margin-top:12px}th,td{border:1px solid #cbd5e1;padding:8px;font-size:12px;text-align:left;vertical-align:top}.kpi{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:10px;margin:16px 0}.kpi div{border:1px solid #cbd5e1;border-radius:8px;padding:10px}</style></head><body><div class="report-head"><img id="report-logo" src="${logoUrl}" alt="NC Convenios" /><h1>Transferencias especiais (${mode})</h1></div><div class="kpi"><div><strong>Total de registros</strong><br/>${report.paginacao.total}</div><div><strong>Pagina</strong><br/>${report.paginacao.pagina}/${report.paginacao.total_paginas}</div><div><strong>Total custeio (pagina)</strong><br/>${formatCurrency(totalCusteio)}</div><div><strong>Total investimento (pagina)</strong><br/>${formatCurrency(totalInvestimento)}</div></div>${mode === "analitico" ? `<h2>Planos de acao especial</h2><table><thead><tr><th>ID</th><th>Codigo</th><th>Ano</th><th>Situacao</th><th>Beneficiario</th><th>UF</th><th>CNPJ</th><th>Parlamentar</th><th>Custeio</th><th>Investimento</th></tr></thead><tbody>${rows}</tbody></table>` : ""}${printScript}</body></html>`);
+  popup.document.close();
+};
+
+const exportTransferenciasDiscricionariasProponenteDesembolsosPdf = (
+  report: TransferenciaDiscricionariaDesembolsoProponenteResponse,
+  mode: ReportPdfMode = "analitico"
+) => {
+  const popup = window.open("", "_blank");
+  if (!popup) {
+    return;
+  }
+
+  const parcelaById = buildDesembolsoParcelaMap(report.itens);
+  const rows = report.itens
+    .map(
+      (item) =>
+        `<tr><td>${parcelaById.get(item.id) ?? "-"}a parcela</td><td>${item.id_desembolso ?? "-"}</td><td>${item.nr_convenio ?? "-"}</td><td>${normalizeReadableText(item.objeto) ?? "-"}</td><td style="text-align:right">${item.valor_contrapartida_financeira === null ? "-" : formatCurrency(item.valor_contrapartida_financeira)}</td><td>${item.data_desembolso ? formatDateOnlyPtBr(item.data_desembolso) : "-"}</td><td>${item.ano_desembolso ?? "-"}</td><td>${item.mes_desembolso ?? "-"}</td><td>${item.nr_siafi ?? "-"}</td><td>${item.ug_emitente_dh ?? "-"}</td><td style="text-align:right">${item.vl_desembolsado === null ? "-" : formatCurrency(item.vl_desembolsado)}</td><td>${item.observacao_dh ?? "-"}</td></tr>`
+    )
+    .join("");
+
+  const logoUrl = getReportLogoUrl();
+  const printScript = getDeferredPrintScript();
+  const proponenteLabel = report.resumo.nome_proponente ?? "Nao informado";
+  const cnpjLabel = report.resumo.cnpj ? formatCnpj(report.resumo.cnpj) : "Nao informado";
+
+  popup.document.write(`<!doctype html><html><head><meta charset="utf-8" /><title>Desembolsos por proponente</title><style>body{font-family:Segoe UI,Arial,sans-serif;padding:24px;color:#102a43}.report-head{display:flex;align-items:center;justify-content:space-between;gap:12px;margin-bottom:14px}.report-head img{max-width:180px;height:auto;display:block}h1,h2{margin:0 0 12px}table{width:100%;border-collapse:collapse;margin-top:12px}th,td{border:1px solid #cbd5e1;padding:8px;font-size:12px;text-align:left;vertical-align:top}.kpi{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:10px;margin:16px 0}.kpi div{border:1px solid #cbd5e1;border-radius:8px;padding:10px}</style></head><body><div class="report-head"><img id="report-logo" src="${logoUrl}" alt="NC Convenios" /><h1>Desembolsos por proponente (${mode})</h1></div><p><strong>Proponente:</strong> ${proponenteLabel}</p><p><strong>CNPJ:</strong> ${cnpjLabel}</p><div class="kpi"><div><strong>Total de desembolsos</strong><br/>${report.resumo.total_desembolsos}</div><div><strong>Total de convenios</strong><br/>${report.resumo.total_convenios}</div><div><strong>Valor total desembolsado</strong><br/>${formatCurrency(report.resumo.valor_total_desembolsado)}</div><div><strong>Data da carga</strong><br/>${report.sincronizacao.data_carga_fonte ?? "Nao informada"}</div></div>${mode === "analitico" ? `<h2>Desembolsos</h2><table><thead><tr><th>Parcela</th><th>ID desembolso</th><th>Convenio</th><th>Objeto</th><th>Contrapartida</th><th>Data</th><th>Ano</th><th>Mes</th><th>SIAFI</th><th>UG emitente</th><th>Valor</th><th>Observacao</th></tr></thead><tbody>${rows}</tbody></table>` : ""}${printScript}</body></html>`);
+  popup.document.close();
+};
+
+const exportTransferenciasDiscricionariasPdf = (
+  report: TransferenciaDiscricionariaResponse,
+  mode: ReportPdfMode = "analitico",
+  desembolsoReports: TransferenciaDiscricionariaDesembolsoResponse[] = [],
+  targetPopup?: Window | null
+) => {
+  const popup = targetPopup ?? window.open("", "_blank");
+  if (!popup) {
+    return;
+  }
+
+  const rows = report.itens
+    .map(
+      (item) =>
+        `<tr><td>${item.nr_proposta ?? "-"}</td><td>${item.nr_convenio ?? "-"}</td><td>${item.uf ?? "-"}</td><td>${item.nome_proponente ?? "-"}</td><td>${normalizeReadableText(item.objeto) ?? "-"}</td><td>${item.situacao_proposta ?? "-"}</td><td>${item.situacao_convenio ?? "-"}</td><td>${item.ano_referencia ?? "-"}</td><td>${item.dia_inic_vigencia ?? "-"}</td><td>${item.dia_fim_vigencia ?? "-"}</td><td>${item.dt_conclusao_prestacao_contas ?? "-"}</td><td style="text-align:right">${item.valor_contrapartida_financeira === null ? "-" : formatCurrency(item.valor_contrapartida_financeira)}</td><td style="text-align:right">${item.valor_global_conv === null ? "-" : formatCurrency(item.valor_global_conv)}</td><td style="text-align:right">${item.valor_desembolsado_conv === null ? "-" : formatCurrency(item.valor_desembolsado_conv)}</td></tr>`
+    )
+    .join("");
+
+  const hasDesembolsoDetails = mode === "analitico" && desembolsoReports.length > 0;
+  const desembolsoSections = hasDesembolsoDetails
+    ? desembolsoReports
+        .map((desembolsoReport) => {
+          const parcelaById = buildDesembolsoParcelaMap(desembolsoReport.itens);
+          const desembolsoRows = [...desembolsoReport.itens]
+            .sort((a, b) => {
+              const parcelaA = parcelaById.get(a.id) ?? Number.MAX_SAFE_INTEGER;
+              const parcelaB = parcelaById.get(b.id) ?? Number.MAX_SAFE_INTEGER;
+              if (parcelaA !== parcelaB) {
+                return parcelaA - parcelaB;
+              }
+
+              const dateA = a.data_desembolso ?? "9999-12-31";
+              const dateB = b.data_desembolso ?? "9999-12-31";
+              if (dateA !== dateB) {
+                return dateA.localeCompare(dateB);
+              }
+
+              const idA = a.id_desembolso ?? a.id;
+              const idB = b.id_desembolso ?? b.id;
+              return idA - idB;
+            })
+            .map(
+              (item) =>
+                `<tr><td>${parcelaById.get(item.id) ?? "-"}a parcela</td><td>${item.id_desembolso ?? "-"}</td><td>${item.data_desembolso ? formatDateOnlyPtBr(item.data_desembolso) : "-"}</td><td>${item.dt_ult_desembolso ? formatDateOnlyPtBr(item.dt_ult_desembolso) : "-"}</td><td>${item.ano_desembolso ?? "-"}</td><td>${item.mes_desembolso ?? "-"}</td><td>${item.qtd_dias_sem_desembolso ?? "-"}</td><td>${item.nr_siafi ?? "-"}</td><td>${item.ug_emitente_dh ?? "-"}</td><td style="text-align:right">${item.vl_desembolsado === null ? "-" : formatCurrency(item.vl_desembolsado)}</td><td>${item.observacao_dh ?? "-"}</td></tr>`
+            )
+            .join("");
+
+          return `<h2>Historico de desembolsos do convenio ${desembolsoReport.resumo.nr_convenio}</h2><table><thead><tr><th>Parcela</th><th>ID desembolso</th><th>Data</th><th>Ult. desembolso</th><th>Ano</th><th>Mes</th><th>Dias sem desembolso</th><th>Nr SIAFI</th><th>UG emitente</th><th>Valor</th><th>Observacao</th></tr></thead><tbody>${desembolsoRows}</tbody></table>`;
+        })
+        .join("")
+    : "";
+
+  const logoUrl = getReportLogoUrl();
+  const printScript = getDeferredPrintScript();
+
+  popup.document.open();
+  popup.document.write(`<!doctype html><html><head><meta charset="utf-8" /><title>Transferencias discricionarias</title><style>body{font-family:Segoe UI,Arial,sans-serif;padding:24px;color:#102a43}.report-head{display:flex;align-items:center;justify-content:space-between;gap:12px;margin-bottom:14px}.report-head img{max-width:180px;height:auto;display:block}h1,h2{margin:0 0 12px}table{width:100%;border-collapse:collapse;margin-top:12px}th,td{border:1px solid #cbd5e1;padding:8px;font-size:11px;text-align:left;vertical-align:top}.kpi{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:10px;margin:16px 0}.kpi div{border:1px solid #cbd5e1;border-radius:8px;padding:10px}</style></head><body><div class="report-head"><img id="report-logo" src="${logoUrl}" alt="NC Convenios" /><h1>Transferencias discricionarias (${mode})</h1></div><div class="kpi"><div><strong>Total registros</strong><br/>${report.paginacao.total}</div><div><strong>Pagina</strong><br/>${report.paginacao.pagina}/${report.paginacao.total_paginas}</div><div><strong>Status sincronizacao</strong><br/>${report.sincronizacao.status}</div><div><strong>Data carga</strong><br/>${report.sincronizacao.data_carga_fonte ?? "Nao informada"}</div></div>${mode === "analitico" ? `<h2>Propostas e convenios</h2><table><thead><tr><th>Nr proposta</th><th>Nr convenio</th><th>UF</th><th>Proponente</th><th>Objeto</th><th>Situacao proposta</th><th>Situacao convenio</th><th>Ano</th><th>Inicio vigencia</th><th>Fim vigencia</th><th>Prestacao contas</th><th>Contrapartida</th><th>Valor global</th><th>Desembolsado</th></tr></thead><tbody>${rows}</tbody></table>` : ""}${desembolsoSections}${printScript}</body></html>`);
+  popup.document.close();
+};
+
 const exportTicketReportPdf = (items: Ticket[], mode: ReportPdfMode) => {
   const popup = window.open("", "_blank");
   if (!popup) {
@@ -1065,7 +1452,10 @@ const exportTicketReportPdf = (items: Ticket[], mode: ReportPdfMode) => {
     )
     .join("");
 
-  popup.document.write(`<!doctype html><html><head><meta charset="utf-8" /><title>Relatorio de tickets</title><style>body{font-family:Segoe UI,Arial,sans-serif;padding:24px;color:#102a43}.report-head{display:flex;align-items:center;justify-content:space-between;gap:12px;margin-bottom:14px}.report-head img{max-width:180px;height:auto;display:block}h1,h2{margin:0 0 12px}table{width:100%;border-collapse:collapse;margin-top:12px}th,td{border:1px solid #cbd5e1;padding:8px;font-size:12px;text-align:left;vertical-align:top}.kpi{display:grid;grid-template-columns:repeat(6,minmax(0,1fr));gap:10px;margin:16px 0}.kpi div{border:1px solid #cbd5e1;border-radius:8px;padding:10px}</style></head><body><div class="report-head"><img src="/api/v1/public/brand-logo" alt="NC Convenios" /><h1>Relatorio de tickets (${mode})</h1></div><div class="kpi"><div><strong>Total</strong><br/>${total}</div><div><strong>Em aberto</strong><br/>${abertos}</div><div><strong>Resolvidos</strong><br/>${resolvidos}</div><div><strong>Atrasados</strong><br/>${atrasados}</div><div><strong>Sem atribuicao</strong><br/>${semAtribuicao}</div><div><strong>Tempo medio resolucao</strong><br/>${tempoMedioResolucaoDias.toFixed(1)} dia(s)</div></div>${mode === "analitico" ? `<h2>Tickets</h2><table><thead><tr><th>Codigo</th><th>Titulo</th><th>Status</th><th>Prioridade</th><th>Atribuido</th><th>Prazo alvo</th><th>SLA</th><th>Criado em</th><th>Resolvido em</th></tr></thead><tbody>${rows}</tbody></table>` : ""}<script>window.print()</script></body></html>`);
+  const logoUrl = getReportLogoUrl();
+  const printScript = getDeferredPrintScript();
+
+  popup.document.write(`<!doctype html><html><head><meta charset="utf-8" /><title>Relatorio de tickets</title><style>body{font-family:Segoe UI,Arial,sans-serif;padding:24px;color:#102a43}.report-head{display:flex;align-items:center;justify-content:space-between;gap:12px;margin-bottom:14px}.report-head img{max-width:180px;height:auto;display:block}h1,h2{margin:0 0 12px}table{width:100%;border-collapse:collapse;margin-top:12px}th,td{border:1px solid #cbd5e1;padding:8px;font-size:12px;text-align:left;vertical-align:top}.kpi{display:grid;grid-template-columns:repeat(6,minmax(0,1fr));gap:10px;margin:16px 0}.kpi div{border:1px solid #cbd5e1;border-radius:8px;padding:10px}</style></head><body><div class="report-head"><img id="report-logo" src="${logoUrl}" alt="NC Convenios" /><h1>Relatorio de tickets (${mode})</h1></div><div class="kpi"><div><strong>Total</strong><br/>${total}</div><div><strong>Em aberto</strong><br/>${abertos}</div><div><strong>Resolvidos</strong><br/>${resolvidos}</div><div><strong>Atrasados</strong><br/>${atrasados}</div><div><strong>Sem atribuicao</strong><br/>${semAtribuicao}</div><div><strong>Tempo medio resolucao</strong><br/>${tempoMedioResolucaoDias.toFixed(1)} dia(s)</div></div>${mode === "analitico" ? `<h2>Tickets</h2><table><thead><tr><th>Codigo</th><th>Titulo</th><th>Status</th><th>Prioridade</th><th>Atribuido</th><th>Prazo alvo</th><th>SLA</th><th>Criado em</th><th>Resolvido em</th></tr></thead><tbody>${rows}</tbody></table>` : ""}${printScript}</body></html>`);
   popup.document.close();
 };
 
@@ -1143,9 +1533,9 @@ export default function App() {
   const [boletimObservacao, setBoletimObservacao] = useState("");
   const [showRepassePanel, setShowRepassePanel] = useState(false);
   const [showWorkProgressPanel, setShowWorkProgressPanel] = useState(false);
-  const [repasseValorInput, setRepasseValorInput] = useState(formatCurrencyInput(0));
-  const [repasseDataInput, setRepasseDataInput] = useState(todayDate());
-  const [empresaVencedoraInput, setEmpresaVencedoraInput] = useState("");
+  const [empresaVencedoraNomeInput, setEmpresaVencedoraNomeInput] = useState("");
+  const [empresaVencedoraCnpjInput, setEmpresaVencedoraCnpjInput] = useState("");
+  const [empresaVencedoraValorInput, setEmpresaVencedoraValorInput] = useState(formatCurrencyInput(0));
   const [showSolicitacoesCaixaPanel, setShowSolicitacoesCaixaPanel] = useState(false);
   const [solicitacoesCaixaItens, setSolicitacoesCaixaItens] = useState<any[]>([]);
   const [solicitacoesCaixaLoading, setSolicitacoesCaixaLoading] = useState(false);
@@ -1154,7 +1544,7 @@ export default function App() {
   const [ticketInstrumentSearching, setTicketInstrumentSearching] = useState(false);
   const [showTicketModalFromSolicitacao, setShowTicketModalFromSolicitacao] = useState(false);
 
-  const [convenetes, setConvenetes] = useState<Convenete[]>([]);
+  const [proponentes, setProponentes] = useState<Proponente[]>([]);
   const [ticketFilters, setTicketFilters] = useState<TicketFilters>(() => emptyTicketFilters());
   const [tickets, setTickets] = useState<Ticket[]>([]);
   const [ticketBoardTab, setTicketBoardTab] = useState<TicketBoardTab>(() => {
@@ -1176,16 +1566,55 @@ export default function App() {
   const [reportData, setReportData] = useState<RepasseReportResponse | null>(null);
   const [obraReportFilters, setObraReportFilters] = useState<ObraReportFilters>(() => emptyObraReportFilters());
   const [obraReportData, setObraReportData] = useState<ObraReportResponse | null>(null);
+  const [transferenciasEspeciaisFilters, setTransferenciasEspeciaisFilters] = useState<TransferenciasEspeciaisFilters>(() =>
+    emptyTransferenciasEspeciaisFilters()
+  );
+  const [transferenciasEspeciaisData, setTransferenciasEspeciaisData] =
+    useState<TransferenciaEspecialPlanoAcaoResponse | null>(null);
+  const [transferenciasEspeciaisPage, setTransferenciasEspeciaisPage] = useState(1);
+  const [transferenciasDiscricionariasFilters, setTransferenciasDiscricionariasFilters] =
+    useState<TransferenciasDiscricionariasFilters>(() => emptyTransferenciasDiscricionariasFilters());
+  const [transferenciasDiscricionariasData, setTransferenciasDiscricionariasData] =
+    useState<TransferenciaDiscricionariaResponse | null>(null);
+  const [transferenciasDiscricionariasFiltros, setTransferenciasDiscricionariasFiltros] =
+    useState<TransferenciaDiscricionariaFiltrosResponse | null>(null);
+  const [transferenciasDiscricionariasCnpjSugestoes, setTransferenciasDiscricionariasCnpjSugestoes] =
+    useState<TransferenciaDiscricionariaProponenteSugestaoItem[]>([]);
+  const [transferenciasDiscricionariasSyncState, setTransferenciasDiscricionariasSyncState] =
+    useState<TransferenciaDiscricionariaResponse["sincronizacao"] | null>(null);
+  const [transferenciasDiscricionariasPage, setTransferenciasDiscricionariasPage] = useState(1);
+  const [transferenciasDiscricionariasTab, setTransferenciasDiscricionariasTab] =
+    useState<TransferenciasDiscricionariasTab>("convenios");
+  const [transferenciasDiscricionariasDesembolsoFilters, setTransferenciasDiscricionariasDesembolsoFilters] =
+    useState<TransferenciasDiscricionariasDesembolsoFilters>(() => emptyTransferenciasDiscricionariasDesembolsoFilters());
+  const [transferenciasDiscricionariasDesembolsoData, setTransferenciasDiscricionariasDesembolsoData] =
+    useState<TransferenciaDiscricionariaDesembolsoResponse | null>(null);
+  const [transferenciasDiscricionariasDesembolsoPage, setTransferenciasDiscricionariasDesembolsoPage] = useState(1);
+  const [isLoadingTransferenciasDiscricionariasDesembolsos, setIsLoadingTransferenciasDiscricionariasDesembolsos] = useState(false);
+  const [transferenciasDiscricionariasProponenteDesembolsoFilters, setTransferenciasDiscricionariasProponenteDesembolsoFilters] =
+    useState<TransferenciasDiscricionariasProponenteDesembolsoFilters>(() =>
+      emptyTransferenciasDiscricionariasProponenteDesembolsoFilters()
+    );
+  const [transferenciasDiscricionariasProponenteDesembolsoData, setTransferenciasDiscricionariasProponenteDesembolsoData] =
+    useState<TransferenciaDiscricionariaDesembolsoProponenteResponse | null>(null);
+  const [transferenciasDiscricionariasProponenteDesembolsoPage, setTransferenciasDiscricionariasProponenteDesembolsoPage] =
+    useState(1);
+  const [isLoadingTransferenciasDiscricionariasProponenteDesembolsos, setIsLoadingTransferenciasDiscricionariasProponenteDesembolsos] =
+    useState(false);
+  const [isSyncingTransferenciasDiscricionarias, setIsSyncingTransferenciasDiscricionarias] = useState(false);
   const [ticketReportFilters, setTicketReportFilters] = useState<TicketReportFilters>(() => emptyTicketReportFilters());
   const [ticketReportData, setTicketReportData] = useState<Ticket[] | null>(null);
-  const [conveneteForm, setConveneteForm] = useState<ConveneteForm>(() => emptyConveneteForm());
-  const [editingConveneteId, setEditingConveneteId] = useState<number | null>(null);
+  const [proponenteCadastro, setProponenteCadastro] = useState<ProponenteCadastroState>(() =>
+    emptyProponenteCadastroState()
+  );
+  const [proponenteSugestoes, setProponenteSugestoes] = useState<ProponenteSugestaoItem[]>([]);
+  const [isLoadingProponenteSugestoes, setIsLoadingProponenteSugestoes] = useState(false);
   const [managedUsers, setManagedUsers] = useState<ManagedUser[]>([]);
   const [adminUserForm, setAdminUserForm] = useState<AdminUserForm>(() => emptyAdminUserForm());
   const [editingManagedUserId, setEditingManagedUserId] = useState<number | null>(null);
   const [isUploadingAvatar, setIsUploadingAvatar] = useState(false);
 
-  const [signatureTab, setSignatureTab] = useState<SignatureTab>("certificados");
+  const [signatureTab, setSignatureTab] = useState<SignatureTab>("documentos");
   const [certificates, setCertificates] = useState<any[]>([]);
   const [documents, setDocuments] = useState<any[]>([]);
   const [documentSearchQuery, setDocumentSearchQuery] = useState("");
@@ -1203,6 +1632,25 @@ export default function App() {
   const [qaAnswer, setQaAnswer] = useState("");
   const [qaSources, setQaSources] = useState<Array<{ chunkIndex: number; score: number; snippet: string }>>([]);
   const [isAskingDocument, setIsAskingDocument] = useState(false);
+  const [documentAiRequests, setDocumentAiRequests] = useState<DocumentAiRequestItem[]>([]);
+  const [isLoadingDocumentAiRequests, setIsLoadingDocumentAiRequests] = useState(false);
+  const [busyDocumentAiRequestId, setBusyDocumentAiRequestId] = useState<number | null>(null);
+  const [documentAiRequestFilterStatus, setDocumentAiRequestFilterStatus] = useState<"" | DocumentAiRequestStatus>("");
+  const [documentAiRequestFilterPriority, setDocumentAiRequestFilterPriority] = useState<"" | DocumentAiRequestPriority>("");
+  const [documentAiRequestFilterQuery, setDocumentAiRequestFilterQuery] = useState("");
+  const [documentAiRequestForm, setDocumentAiRequestForm] = useState<{
+    titulo: string;
+    descricao: string;
+    prioridade: DocumentAiRequestPriority;
+    prazo: string;
+    validadeDias: number;
+  }>({
+    titulo: "",
+    descricao: "",
+    prioridade: "MEDIA",
+    prazo: "",
+    validadeDias: 7
+  });
   const [certificateForm, setCertificateForm] = useState({ nome: "", titular: "", cpf: "", validade: "", arquivo: "", senha: "" });
   const [documentForm, setDocumentForm] = useState<{ titulo: string; descricao: string; arquivo: File | null; arquivo_nome: string }>({
     titulo: "",
@@ -1242,9 +1690,9 @@ export default function App() {
     }
     return Array.from(values).sort((a, b) => a.localeCompare(b, "pt-BR"));
   }, [overviewItems, sortedInstruments]);
-  const conveneteNameById = useMemo(() => {
-    return new Map(convenetes.map((item) => [item.id, item.nome]));
-  }, [convenetes]);
+  const proponenteNameById = useMemo(() => {
+    return new Map(proponentes.map((item) => [item.id, item.nome]));
+  }, [proponentes]);
   const profileInstrument = useMemo(() => {
     if (instrumentPageId === null) {
       return null;
@@ -1262,6 +1710,7 @@ export default function App() {
     return null;
   }, [instrumentPageId, sortedInstruments, selectedInstrument]);
   const currentFlowType: InstrumentFlowType = profileInstrument?.fluxo_tipo ?? "OBRA";
+  const allowChecklistExternalLink = currentFlowType !== "OBRA";
   const isEditingProfileInstrument = Boolean(
     canManageInstruments && isInstrumentProfileView && profileInstrument && editingId === profileInstrument.id
   );
@@ -1271,30 +1720,46 @@ export default function App() {
     : 0;
   const profileInstrumentRepasses = profileInstrument?.repasses ?? [];
   const reportInstrumentOptions = useMemo(() => {
-    if (reportFilters.convenete_id.trim() === "") {
+    if (reportFilters.proponente_id.trim() === "") {
       return [];
     }
 
-    const conveneteId = Number(reportFilters.convenete_id);
-    return sortedInstruments.filter((item) => item.convenete_id === conveneteId);
-  }, [reportFilters.convenete_id, sortedInstruments]);
+    const proponenteId = Number(reportFilters.proponente_id);
+    return sortedInstruments.filter((item) => (item.proponente_id ?? item.convenete_id) === proponenteId);
+  }, [reportFilters.proponente_id, sortedInstruments]);
   const obraReportInstrumentOptions = useMemo(() => {
     const obraItems = sortedInstruments.filter((item) => item.fluxo_tipo === "OBRA");
-    if (obraReportFilters.convenete_id.trim() === "") {
+    if (obraReportFilters.proponente_id.trim() === "") {
       return obraItems;
     }
 
-    const conveneteId = Number(obraReportFilters.convenete_id);
-    return obraItems.filter((item) => item.convenete_id === conveneteId);
-  }, [obraReportFilters.convenete_id, sortedInstruments]);
+    const proponenteId = Number(obraReportFilters.proponente_id);
+    return obraItems.filter((item) => (item.proponente_id ?? item.convenete_id) === proponenteId);
+  }, [obraReportFilters.proponente_id, sortedInstruments]);
+
+  const overviewItemsAtendidos = useMemo(() => {
+    const proponenteIds = new Set(proponentes.map((item) => item.id));
+    if (proponenteIds.size === 0) {
+      return [] as Instrument[];
+    }
+    return overviewItems.filter((item) => {
+      const proponenteId = item.proponente_id ?? item.convenete_id;
+      return proponenteId !== null && proponenteId !== undefined && proponenteIds.has(proponenteId);
+    });
+  }, [overviewItems, proponentes]);
+
+  const alertsAtendidos = useMemo(() => {
+    const instrumentoIds = new Set(overviewItemsAtendidos.map((item) => item.id));
+    return alerts.filter((item) => instrumentoIds.has(item.instrumento_id));
+  }, [alerts, overviewItemsAtendidos]);
 
   const dashboard = useMemo(() => {
-    const totalRegistros = overviewItems.length;
-    const ativos = overviewItems.filter((item) => item.ativo).length;
-    const valorTotal = overviewItems.reduce((acc, item) => acc + item.valor_total, 0);
+    const totalRegistros = overviewItemsAtendidos.length;
+    const ativos = overviewItemsAtendidos.filter((item) => item.ativo).length;
+    const valorTotal = overviewItemsAtendidos.reduce((acc, item) => acc + item.valor_total, 0);
     const porStatus = STATUS_OPTIONS.map((status) => ({
       status,
-      quantidade: overviewItems.filter((item) => item.status === status).length
+      quantidade: overviewItemsAtendidos.filter((item) => item.status === status).length
     }));
 
     return {
@@ -1302,16 +1767,16 @@ export default function App() {
       ativos,
       inativos: totalRegistros - ativos,
       valorTotal,
-      alertas: alerts.length,
+      alertas: alertsAtendidos.length,
       porStatus
     };
-  }, [overviewItems, alerts]);
+  }, [overviewItemsAtendidos, alertsAtendidos]);
 
   const dashboardInsights = useMemo(() => {
-    const totalRepassado = overviewItems.reduce((acc, item) => acc + item.valor_ja_repassado, 0);
+    const totalRepassado = overviewItemsAtendidos.reduce((acc, item) => acc + item.valor_ja_repassado, 0);
     const percentualMedioRepassado =
-      overviewItems.length > 0
-        ? overviewItems.reduce((acc, item) => acc + item.percentual_repassado, 0) / overviewItems.length
+      overviewItemsAtendidos.length > 0
+        ? overviewItemsAtendidos.reduce((acc, item) => acc + item.percentual_repassado, 0) / overviewItemsAtendidos.length
         : 0;
 
     const flowTypes: InstrumentFlowType[] = [
@@ -1321,11 +1786,11 @@ export default function App() {
     ];
     const porFluxo: Array<{ fluxo: InstrumentFlowType; quantidade: number }> = flowTypes.map((fluxo) => ({
       fluxo,
-      quantidade: overviewItems.filter((item) => item.fluxo_tipo === fluxo).length
+      quantidade: overviewItemsAtendidos.filter((item) => item.fluxo_tipo === fluxo).length
     }));
 
     const concedenteMap = new Map<string, number>();
-    for (const item of overviewItems) {
+    for (const item of overviewItemsAtendidos) {
       const key = item.concedente.trim();
       concedenteMap.set(key, (concedenteMap.get(key) ?? 0) + 1);
     }
@@ -1334,7 +1799,7 @@ export default function App() {
       .sort((a, b) => b.quantidade - a.quantidade)
       .slice(0, 5);
 
-    const alertasCriticos = [...alerts]
+    const alertasCriticos = [...alertsAtendidos]
       .sort((a, b) => {
         const aMin = Math.min(a.dias_para_vigencia_fim, a.dias_para_prestacao_contas ?? Number.POSITIVE_INFINITY);
         const bMin = Math.min(b.dias_para_vigencia_fim, b.dias_para_prestacao_contas ?? Number.POSITIVE_INFINITY);
@@ -1342,7 +1807,7 @@ export default function App() {
       })
       .slice(0, 5);
 
-    const obrasAtivas = overviewItems.filter((item) => item.fluxo_tipo === "OBRA" && item.ativo);
+    const obrasAtivas = overviewItemsAtendidos.filter((item) => item.fluxo_tipo === "OBRA" && item.ativo);
     const obrasComBaixoRepasse = [...obrasAtivas]
       .sort((a, b) => a.percentual_repassado - b.percentual_repassado)
       .slice(0, 5);
@@ -1354,13 +1819,13 @@ export default function App() {
       topConcedentes,
       alertasCriticos,
       obrasComBaixoRepasse,
-      prestacaoPendente: overviewItems.filter((item) => item.status === "PRESTACAO_PENDENTE").length,
-      emExecucao: overviewItems.filter((item) => item.status === "EM_EXECUCAO").length,
-      vencidos: overviewItems.filter((item) => item.status === "VENCIDO").length,
+      prestacaoPendente: overviewItemsAtendidos.filter((item) => item.status === "PRESTACAO_PENDENTE").length,
+      emExecucao: overviewItemsAtendidos.filter((item) => item.status === "EM_EXECUCAO").length,
+      vencidos: overviewItemsAtendidos.filter((item) => item.status === "VENCIDO").length,
       usuarios: managedUsers.length,
       logs: auditLogs.length
     };
-  }, [overviewItems, alerts, managedUsers, auditLogs]);
+  }, [overviewItemsAtendidos, alertsAtendidos, managedUsers, auditLogs]);
 
   const openTickets = useMemo(
     () => tickets.filter((item) => item.status === "ABERTO" || item.status === "EM_ANDAMENTO"),
@@ -1434,6 +1899,16 @@ export default function App() {
     };
   }, [ticketReportData]);
 
+  const transferenciasDiscricionariasSyncInfo =
+    transferenciasDiscricionariasSyncState ?? transferenciasDiscricionariasData?.sincronizacao ?? null;
+  const transferenciasDiscricionariasProponenteParcelaMap = useMemo(
+    () =>
+      transferenciasDiscricionariasProponenteDesembolsoData
+        ? buildDesembolsoParcelaMap(transferenciasDiscricionariasProponenteDesembolsoData.itens)
+        : new Map<number, number>(),
+    [transferenciasDiscricionariasProponenteDesembolsoData]
+  );
+
   const refreshTechnicalHealth = async () => {
     let backendVersion = "desconhecida";
 
@@ -1461,7 +1936,7 @@ export default function App() {
     }
 
     try {
-      const smokeResponse = await fetch("/api/v1/relatorios/repasses?convenete_id=1", {
+      const smokeResponse = await fetch("/api/v1/relatorios/obras?ativo=true", {
         headers: {
           Authorization: `Bearer ${token}`
         }
@@ -1519,13 +1994,29 @@ export default function App() {
     setBoletimObservacao("");
     setShowRepassePanel(false);
     setShowWorkProgressPanel(false);
-    setRepasseValorInput(formatCurrencyInput(0));
-    setRepasseDataInput(todayDate());
     setRelatorioTab("repasses");
     setReportFilters(emptyReportFilters());
     setReportData(null);
     setObraReportFilters(emptyObraReportFilters());
     setObraReportData(null);
+    setTransferenciasEspeciaisFilters(emptyTransferenciasEspeciaisFilters());
+    setTransferenciasEspeciaisData(null);
+    setTransferenciasEspeciaisPage(1);
+    setTransferenciasDiscricionariasFilters(emptyTransferenciasDiscricionariasFilters());
+    setTransferenciasDiscricionariasData(null);
+    setTransferenciasDiscricionariasFiltros(null);
+    setTransferenciasDiscricionariasCnpjSugestoes([]);
+    setTransferenciasDiscricionariasSyncState(null);
+    setTransferenciasDiscricionariasPage(1);
+    setTransferenciasDiscricionariasTab("convenios");
+    setTransferenciasDiscricionariasDesembolsoFilters(emptyTransferenciasDiscricionariasDesembolsoFilters());
+    setTransferenciasDiscricionariasDesembolsoData(null);
+    setTransferenciasDiscricionariasDesembolsoPage(1);
+    setTransferenciasDiscricionariasProponenteDesembolsoFilters(
+      emptyTransferenciasDiscricionariasProponenteDesembolsoFilters()
+    );
+    setTransferenciasDiscricionariasProponenteDesembolsoData(null);
+    setTransferenciasDiscricionariasProponenteDesembolsoPage(1);
     setTicketReportFilters(emptyTicketReportFilters());
     setTicketReportData(null);
     setTicketFilters(emptyTicketFilters());
@@ -1540,9 +2031,9 @@ export default function App() {
     setEditingId(null);
     setShowCreateInstrumentForm(false);
     setForm(emptyInstrumentForm());
-    setConvenetes([]);
-    setEditingConveneteId(null);
-    setConveneteForm(emptyConveneteForm());
+    setProponentes([]);
+    setProponenteCadastro(emptyProponenteCadastroState());
+    setProponenteSugestoes([]);
     setManagedUsers([]);
     setEditingManagedUserId(null);
     setAdminUserForm(emptyAdminUserForm());
@@ -1689,14 +2180,14 @@ export default function App() {
     setAuditLogs(logs);
   };
 
-  const loadConvenetes = async (authToken?: string) => {
+  const loadProponentes = async (authToken?: string) => {
     const currentToken = authToken ?? token;
     if (!currentToken) {
       return;
     }
 
-    const items = await listConvenetes(currentToken);
-    setConvenetes(items);
+    const items = await listProponentes(currentToken);
+    setProponentes(items);
   };
 
   const loadRepasseReport = async (authToken?: string) => {
@@ -1705,13 +2196,13 @@ export default function App() {
       return;
     }
 
-    if (reportFilters.convenete_id.trim() === "") {
+    if (reportFilters.proponente_id.trim() === "") {
       setReportData(null);
       return;
     }
 
     const report = await getRepasseReport(currentToken, {
-      convenete_id: Number(reportFilters.convenete_id),
+      proponente_id: Number(reportFilters.proponente_id),
       instrumento_id: reportFilters.instrumento_id.trim() === "" ? undefined : Number(reportFilters.instrumento_id),
       data_de: reportFilters.data_de || undefined,
       data_ate: reportFilters.data_ate || undefined
@@ -1726,7 +2217,7 @@ export default function App() {
     }
 
     const report = await getObraReport(currentToken, {
-      convenete_id: obraReportFilters.convenete_id.trim() === "" ? undefined : Number(obraReportFilters.convenete_id),
+      proponente_id: obraReportFilters.proponente_id.trim() === "" ? undefined : Number(obraReportFilters.proponente_id),
       instrumento_id: obraReportFilters.instrumento_id.trim() === "" ? undefined : Number(obraReportFilters.instrumento_id),
       status: obraReportFilters.status || undefined,
       ativo: obraReportFilters.ativo === "true",
@@ -1735,6 +2226,170 @@ export default function App() {
     });
 
     setObraReportData(report);
+  };
+
+  const loadTransferenciasEspeciaisReport = async (pageOverride?: number, authToken?: string) => {
+    const currentToken = authToken ?? token;
+    if (!currentToken) {
+      return;
+    }
+
+    const pageSizeParsed = Number(transferenciasEspeciaisFilters.page_size);
+    const report = await getTransferenciasEspeciaisPlanoAcao(currentToken, {
+      cnpj: transferenciasEspeciaisFilters.cnpj.trim() || undefined,
+      nome_beneficiario: transferenciasEspeciaisFilters.nome_beneficiario.trim() || undefined,
+      uf: transferenciasEspeciaisFilters.uf.trim().toUpperCase() || undefined,
+      ano: transferenciasEspeciaisFilters.ano.trim() === "" ? undefined : Number(transferenciasEspeciaisFilters.ano),
+      situacao: transferenciasEspeciaisFilters.situacao.trim() || undefined,
+      codigo_plano_acao: transferenciasEspeciaisFilters.codigo_plano_acao.trim() || undefined,
+      parlamentar: transferenciasEspeciaisFilters.parlamentar.trim() || undefined,
+      page: pageOverride ?? transferenciasEspeciaisPage,
+      page_size: Number.isFinite(pageSizeParsed) && pageSizeParsed > 0 ? pageSizeParsed : 20
+    });
+
+    setTransferenciasEspeciaisData(report);
+    setTransferenciasEspeciaisPage(report.paginacao.pagina);
+  };
+
+  const buildTransferenciasDiscricionariasQuery = (
+    page: number,
+    pageSize: number,
+    filters: TransferenciasDiscricionariasFilters
+  ) => {
+    const vigenciaDiasParsed = Number(filters.vigencia_a_vencer_dias);
+    const vigenciaDias = [30, 60, 90].includes(vigenciaDiasParsed)
+      ? (vigenciaDiasParsed as 30 | 60 | 90)
+      : undefined;
+
+    return {
+      cnpj: filters.cnpj.trim() || undefined,
+      nome_proponente: filters.nome_proponente.trim() || undefined,
+      uf: filters.uf.trim().toUpperCase() || undefined,
+      municipio: filters.municipio.trim() || undefined,
+      ano: filters.ano.trim() === "" ? undefined : Number(filters.ano),
+      situacao_proposta: filters.situacao_proposta.trim() || undefined,
+      situacao_convenio: filters.situacao_convenio.trim() || undefined,
+      nr_convenio: filters.nr_convenio.trim() || undefined,
+      nr_proposta: filters.nr_proposta.trim() || undefined,
+      tipo_ente: filters.tipo_ente || undefined,
+      vigencia_a_vencer_dias: vigenciaDias,
+      page,
+      page_size: pageSize
+    };
+  };
+
+  const loadTransferenciasDiscricionariasReport = async (
+    pageOverride?: number,
+    authToken?: string,
+    filtersOverride?: Partial<TransferenciasDiscricionariasFilters>
+  ) => {
+    const currentToken = authToken ?? token;
+    if (!currentToken) {
+      return;
+    }
+
+    const sourceFilters = filtersOverride
+      ? { ...transferenciasDiscricionariasFilters, ...filtersOverride }
+      : transferenciasDiscricionariasFilters;
+
+    const pageSizeParsed = Number(sourceFilters.page_size);
+    const effectivePageSize = Number.isFinite(pageSizeParsed) && pageSizeParsed > 0 ? pageSizeParsed : 20;
+    const report = await getTransferenciasDiscricionarias(
+      currentToken,
+      buildTransferenciasDiscricionariasQuery(pageOverride ?? transferenciasDiscricionariasPage, effectivePageSize, sourceFilters)
+    );
+
+    setTransferenciasDiscricionariasData(report);
+    setTransferenciasDiscricionariasSyncState(report.sincronizacao);
+    setTransferenciasDiscricionariasPage(report.paginacao.pagina);
+  };
+
+  const loadTransferenciasDiscricionariasFiltros = async (authToken?: string) => {
+    const currentToken = authToken ?? token;
+    if (!currentToken) {
+      return;
+    }
+
+    const filtros = await getTransferenciasDiscricionariasFiltros(currentToken);
+    setTransferenciasDiscricionariasFiltros(filtros);
+  };
+
+  const loadTransferenciasDiscricionariasCnpjSugestoes = async (cnpjParcial: string, authToken?: string) => {
+    const currentToken = authToken ?? token;
+    if (!currentToken) {
+      return;
+    }
+
+    const digits = cnpjParcial.replace(/\D/g, "");
+    if (digits.length < 4) {
+      setTransferenciasDiscricionariasCnpjSugestoes([]);
+      return;
+    }
+
+    const result = await getTransferenciasDiscricionariasProponenteSugestoes(currentToken, {
+      cnpj: digits,
+      limit: 10
+    });
+    setTransferenciasDiscricionariasCnpjSugestoes(result.itens);
+  };
+
+  const loadTransferenciasDiscricionariasDesembolsos = async (pageOverride?: number, authToken?: string) => {
+    const currentToken = authToken ?? token;
+    if (!currentToken) {
+      return;
+    }
+
+    const nrConvenio = transferenciasDiscricionariasDesembolsoFilters.nr_convenio.trim();
+    if (nrConvenio === "") {
+      setTransferenciasDiscricionariasDesembolsoData(null);
+      return;
+    }
+
+    const pageSizeParsed = Number(transferenciasDiscricionariasDesembolsoFilters.page_size);
+    const anoParsed = Number(transferenciasDiscricionariasDesembolsoFilters.ano);
+    const mesParsed = Number(transferenciasDiscricionariasDesembolsoFilters.mes);
+
+    const report = await getTransferenciasDiscricionariasDesembolsos(currentToken, {
+      nr_convenio: nrConvenio,
+      ano: Number.isFinite(anoParsed) && anoParsed >= 2000 ? anoParsed : undefined,
+      mes: Number.isFinite(mesParsed) && mesParsed >= 1 && mesParsed <= 12 ? mesParsed : undefined,
+      page: pageOverride ?? transferenciasDiscricionariasDesembolsoPage,
+      page_size: Number.isFinite(pageSizeParsed) && pageSizeParsed > 0 ? pageSizeParsed : 50
+    });
+
+    setTransferenciasDiscricionariasDesembolsoData(report);
+    setTransferenciasDiscricionariasDesembolsoPage(report.paginacao.pagina);
+  };
+
+  const loadTransferenciasDiscricionariasDesembolsosPorProponente = async (pageOverride?: number, authToken?: string) => {
+    const currentToken = authToken ?? token;
+    if (!currentToken) {
+      return;
+    }
+
+    const cnpjDigits = transferenciasDiscricionariasProponenteDesembolsoFilters.cnpj.replace(/\D/g, "");
+    const nomeProponente = transferenciasDiscricionariasProponenteDesembolsoFilters.nome_proponente.trim();
+
+    if (cnpjDigits === "" && nomeProponente === "") {
+      setTransferenciasDiscricionariasProponenteDesembolsoData(null);
+      return;
+    }
+
+    const pageSizeParsed = Number(transferenciasDiscricionariasProponenteDesembolsoFilters.page_size);
+    const anoParsed = Number(transferenciasDiscricionariasProponenteDesembolsoFilters.ano);
+    const mesParsed = Number(transferenciasDiscricionariasProponenteDesembolsoFilters.mes);
+
+    const report = await getTransferenciasDiscricionariasDesembolsosPorProponente(currentToken, {
+      cnpj: cnpjDigits || undefined,
+      nome_proponente: nomeProponente || undefined,
+      ano: Number.isFinite(anoParsed) && anoParsed >= 2000 ? anoParsed : undefined,
+      mes: Number.isFinite(mesParsed) && mesParsed >= 1 && mesParsed <= 12 ? mesParsed : undefined,
+      page: pageOverride ?? transferenciasDiscricionariasProponenteDesembolsoPage,
+      page_size: Number.isFinite(pageSizeParsed) && pageSizeParsed > 0 ? pageSizeParsed : 100
+    });
+
+    setTransferenciasDiscricionariasProponenteDesembolsoData(report);
+    setTransferenciasDiscricionariasProponenteDesembolsoPage(report.paginacao.pagina);
   };
 
   const loadManagedUsers = async (authToken?: string) => {
@@ -1828,9 +2483,16 @@ export default function App() {
     setIsBusy(true);
     setMessage("");
     try {
-      await Promise.all([loadInstruments(authToken), loadDashboard(authToken), loadAuditTrail(authToken), loadTickets(authToken)]);
+      const coreResults = await Promise.allSettled([
+        loadInstruments(authToken),
+        loadDashboard(authToken),
+        loadAuditTrail(authToken),
+        loadTickets(authToken)
+      ]);
+
+      const coreFailures = coreResults.filter((item) => item.status === "rejected");
       try {
-        await loadConvenetes(authToken);
+        await loadProponentes(authToken);
       } catch {
         // Intencionalmente ignorado para nao bloquear o modulo de instrumentos.
       }
@@ -1844,7 +2506,15 @@ export default function App() {
       } catch {
         // Intencionalmente ignorado para nao bloquear outras telas.
       }
-      setMessage("Dados atualizados com sucesso.");
+
+      if (coreFailures.length === 0) {
+        setMessage("Dados atualizados com sucesso.");
+      } else {
+        const firstError = coreFailures[0] as PromiseRejectedResult;
+        const baseMessage =
+          firstError.reason instanceof Error ? firstError.reason.message : "Falha parcial ao atualizar dados.";
+        setMessage(`${baseMessage} (${coreFailures.length} modulo(s) com falha).`);
+      }
     } catch (error) {
       setMessage(error instanceof Error ? error.message : "Falha ao atualizar dados.");
     } finally {
@@ -1937,19 +2607,34 @@ export default function App() {
 
   useEffect(() => {
     if (!profileInstrument) {
-      setRepasseValorInput(formatCurrencyInput(0));
-      setRepasseDataInput(todayDate());
-      setEmpresaVencedoraInput("");
+      setEmpresaVencedoraNomeInput("");
+      setEmpresaVencedoraCnpjInput("");
+      setEmpresaVencedoraValorInput(formatCurrencyInput(0));
       return;
     }
 
-    setRepasseValorInput(formatCurrencyInput(0));
-    setRepasseDataInput(todayDate());
-    setEmpresaVencedoraInput(profileInstrument.orgao_executor ?? "");
+    setEmpresaVencedoraNomeInput(profileInstrument.empresa_vencedora ?? "");
+    setEmpresaVencedoraCnpjInput(profileInstrument.cnpj_vencedora ?? "");
+    setEmpresaVencedoraValorInput(formatCurrencyInput(profileInstrument.valor_vencedor ?? 0));
   }, [
     profileInstrument?.id,
-    profileInstrument?.orgao_executor
+    profileInstrument?.empresa_vencedora,
+    profileInstrument?.cnpj_vencedora,
+    profileInstrument?.valor_vencedor
   ]);
+
+  useEffect(() => {
+    if (!token || !showRepassePanel || !profileInstrument) {
+      return;
+    }
+
+    withLoadedRepasses(token, profileInstrument)
+      .then((updatedWithRepasses) => {
+        setInstruments((prev) => prev.map((item) => (item.id === updatedWithRepasses.id ? updatedWithRepasses : item)));
+        setSelectedInstrument(updatedWithRepasses);
+      })
+      .catch(() => undefined);
+  }, [token, showRepassePanel, profileInstrument?.id]);
 
   useEffect(() => {
     setStageFollowUpText("");
@@ -1959,30 +2644,36 @@ export default function App() {
   }, [activeWorkflowStage]);
 
   useEffect(() => {
-    if (convenetes.length === 0) {
+    if (proponentes.length === 0) {
       return;
     }
 
     setReportFilters((prev) => {
-      if (prev.convenete_id.trim() !== "") {
+      const selectedId = Number(prev.proponente_id);
+      const hasSelected = Number.isInteger(selectedId) && proponentes.some((item) => item.id === selectedId);
+      if (prev.proponente_id.trim() !== "" && hasSelected) {
         return prev;
       }
       return {
         ...prev,
-        convenete_id: String(convenetes[0].id)
+        proponente_id: String(proponentes[0].id),
+        instrumento_id: ""
       };
     });
 
     setObraReportFilters((prev) => {
-      if (prev.convenete_id.trim() !== "") {
+      const selectedId = Number(prev.proponente_id);
+      const hasSelected = Number.isInteger(selectedId) && proponentes.some((item) => item.id === selectedId);
+      if (prev.proponente_id.trim() !== "" && hasSelected) {
         return prev;
       }
       return {
         ...prev,
-        convenete_id: String(convenetes[0].id)
+        proponente_id: String(proponentes[0].id),
+        instrumento_id: ""
       };
     });
-  }, [convenetes]);
+  }, [proponentes]);
 
   useEffect(() => {
     if (!isAuthenticated || activeView !== "relatorios") {
@@ -1993,12 +2684,12 @@ export default function App() {
       return;
     }
 
-    if (reportFilters.convenete_id.trim() === "" || reportData) {
+    if (reportFilters.proponente_id.trim() === "" || reportData) {
       return;
     }
 
     void onApplyRepasseReportFilters();
-  }, [activeView, isAuthenticated, relatorioTab, reportFilters.convenete_id, reportData]);
+  }, [activeView, isAuthenticated, relatorioTab, reportFilters.proponente_id, reportData]);
 
   useEffect(() => {
     if (!isAuthenticated || activeView !== "relatorios") {
@@ -2033,6 +2724,77 @@ export default function App() {
   }, [activeView, isAuthenticated, relatorioTab, ticketReportData]);
 
   useEffect(() => {
+    if (!isAuthenticated || activeView !== "relatorios") {
+      return;
+    }
+
+    if (relatorioTab !== "transferencias_especiais") {
+      return;
+    }
+
+    if (transferenciasEspeciaisData) {
+      return;
+    }
+
+    void onApplyTransferenciasEspeciaisFilters(1);
+  }, [activeView, isAuthenticated, relatorioTab, transferenciasEspeciaisData]);
+
+  useEffect(() => {
+    if (!isAuthenticated || activeView !== "relatorios") {
+      return;
+    }
+
+    if (relatorioTab !== "transferencias_discricionarias") {
+      return;
+    }
+
+    if (transferenciasDiscricionariasData) {
+      return;
+    }
+
+    void onApplyTransferenciasDiscricionariasFilters(1);
+  }, [activeView, isAuthenticated, relatorioTab, transferenciasDiscricionariasData]);
+
+  useEffect(() => {
+    if (!isAuthenticated || activeView !== "relatorios") {
+      return;
+    }
+
+    if (relatorioTab !== "transferencias_discricionarias") {
+      return;
+    }
+
+    if (transferenciasDiscricionariasFiltros) {
+      return;
+    }
+
+    void loadTransferenciasDiscricionariasFiltros();
+  }, [activeView, isAuthenticated, relatorioTab, transferenciasDiscricionariasFiltros]);
+
+  useEffect(() => {
+    if (!isAuthenticated || activeView !== "relatorios" || relatorioTab !== "transferencias_discricionarias") {
+      return;
+    }
+
+    const cnpjDigits = transferenciasDiscricionariasFilters.cnpj.replace(/\D/g, "");
+    if (cnpjDigits.length < 4) {
+      setTransferenciasDiscricionariasCnpjSugestoes([]);
+      return;
+    }
+
+    const timer = window.setTimeout(() => {
+      void loadTransferenciasDiscricionariasCnpjSugestoes(cnpjDigits);
+    }, 300);
+
+    return () => window.clearTimeout(timer);
+  }, [
+    activeView,
+    isAuthenticated,
+    relatorioTab,
+    transferenciasDiscricionariasFilters.cnpj
+  ]);
+
+  useEffect(() => {
     if (reportFilters.instrumento_id.trim() === "") {
       return;
     }
@@ -2064,6 +2826,7 @@ export default function App() {
     }
     void onLoadCertificates();
     void onLoadDocuments();
+    void onLoadDocumentAiRequests();
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [isAuthenticated, activeView]);
 
@@ -2075,6 +2838,7 @@ export default function App() {
       void onLoadCertificates();
     } else {
       void onLoadDocuments();
+      void onLoadDocumentAiRequests();
     }
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [signatureTab]);
@@ -2116,8 +2880,13 @@ export default function App() {
     }
   };
 
-  const onDeleteChecklistItem = async (itemId: number) => {
+  const onDeleteChecklistItem = async (itemId: number, nomeDocumento?: string) => {
     if (!token || instrumentPageId === null || !canManageInstruments) {
+      return;
+    }
+
+    const alvo = nomeDocumento?.trim() ? `\"${nomeDocumento.trim()}\"` : "este item";
+    if (!window.confirm(`Deseja realmente excluir ${alvo} do checklist?`)) {
       return;
     }
 
@@ -2506,8 +3275,8 @@ export default function App() {
   const appShellClassName = `${activeView === "tickets" ? "app-shell tickets-top-nav" : "app-shell"}${menuTransition ? ` ${menuTransition}` : ""}`;
 
   const onApplyRepasseReportFilters = async () => {
-    if (reportFilters.convenete_id.trim() === "") {
-      setMessage("Selecione um convenete para gerar o relatorio.");
+    if (reportFilters.proponente_id.trim() === "") {
+      setMessage("Selecione um proponente para gerar o relatorio.");
       return;
     }
 
@@ -2526,7 +3295,7 @@ export default function App() {
   const onClearRepasseReportFilters = () => {
     setReportFilters((prev) => ({
       ...emptyReportFilters(),
-      convenete_id: prev.convenete_id
+      proponente_id: prev.proponente_id
     }));
     setReportData(null);
   };
@@ -2534,9 +3303,249 @@ export default function App() {
   const onClearObraReportFilters = () => {
     setObraReportFilters((prev) => ({
       ...emptyObraReportFilters(),
-      convenete_id: prev.convenete_id
+      proponente_id: prev.proponente_id
     }));
     setObraReportData(null);
+  };
+
+  const onApplyTransferenciasEspeciaisFilters = async (nextPage = 1) => {
+    setIsBusy(true);
+    setMessage("");
+    try {
+      await loadTransferenciasEspeciaisReport(nextPage);
+      setMessage("Relatorio de transferencias especiais atualizado com sucesso.");
+    } catch (error) {
+      setMessage(error instanceof Error ? error.message : "Falha ao consultar transferencias especiais.");
+    } finally {
+      setIsBusy(false);
+    }
+  };
+
+  const onClearTransferenciasEspeciaisFilters = () => {
+    setTransferenciasEspeciaisFilters(emptyTransferenciasEspeciaisFilters());
+    setTransferenciasEspeciaisData(null);
+    setTransferenciasEspeciaisPage(1);
+  };
+
+  const onApplyTransferenciasDiscricionariasFilters = async (nextPage = 1) => {
+    setIsBusy(true);
+    setMessage("");
+    try {
+      await loadTransferenciasDiscricionariasReport(nextPage);
+      setMessage("Relatorio de transferencias discricionarias atualizado com sucesso.");
+    } catch (error) {
+      setMessage(error instanceof Error ? error.message : "Falha ao consultar transferencias discricionarias.");
+    } finally {
+      setIsBusy(false);
+    }
+  };
+
+  const onApplyTransferenciasDiscricionariasVigenciaPreset = async (dias: 30 | 60 | 90) => {
+    const nextFilters: TransferenciasDiscricionariasFilters = {
+      ...transferenciasDiscricionariasFilters,
+      vigencia_a_vencer_dias: String(dias) as "30" | "60" | "90"
+    };
+
+    setTransferenciasDiscricionariasFilters(nextFilters);
+    setTransferenciasDiscricionariasTab("convenios");
+    setIsBusy(true);
+    setMessage("");
+    try {
+      await loadTransferenciasDiscricionariasReport(1, undefined, nextFilters);
+      setMessage(`Relatorio de vigencias a vencer em ate ${dias} dias atualizado com sucesso.`);
+    } catch (error) {
+      setMessage(error instanceof Error ? error.message : "Falha ao consultar vigencias a vencer.");
+    } finally {
+      setIsBusy(false);
+    }
+  };
+
+  const onClearTransferenciasDiscricionariasFilters = () => {
+    setTransferenciasDiscricionariasFilters(emptyTransferenciasDiscricionariasFilters());
+    setTransferenciasDiscricionariasData(null);
+    setTransferenciasDiscricionariasCnpjSugestoes([]);
+    setTransferenciasDiscricionariasSyncState(null);
+    setTransferenciasDiscricionariasPage(1);
+    setTransferenciasDiscricionariasTab("convenios");
+    setTransferenciasDiscricionariasDesembolsoFilters(emptyTransferenciasDiscricionariasDesembolsoFilters());
+    setTransferenciasDiscricionariasDesembolsoData(null);
+    setTransferenciasDiscricionariasDesembolsoPage(1);
+    setTransferenciasDiscricionariasProponenteDesembolsoFilters(
+      emptyTransferenciasDiscricionariasProponenteDesembolsoFilters()
+    );
+    setTransferenciasDiscricionariasProponenteDesembolsoData(null);
+    setTransferenciasDiscricionariasProponenteDesembolsoPage(1);
+  };
+
+  const onOpenTransferenciasDiscricionariasDesembolsos = async (nrConvenio: string) => {
+    const convenio = nrConvenio.trim();
+    if (convenio === "") {
+      return;
+    }
+
+    setTransferenciasDiscricionariasDesembolsoFilters((prev) => ({
+      ...prev,
+      nr_convenio: convenio
+    }));
+    setTransferenciasDiscricionariasDesembolsoPage(1);
+    setIsLoadingTransferenciasDiscricionariasDesembolsos(true);
+    setMessage("");
+    try {
+      await loadTransferenciasDiscricionariasDesembolsos(1);
+      setMessage(`Historico de desembolsos do convenio ${convenio} carregado.`);
+    } catch (error) {
+      setMessage(error instanceof Error ? error.message : "Falha ao carregar historico de desembolsos.");
+    } finally {
+      setIsLoadingTransferenciasDiscricionariasDesembolsos(false);
+    }
+  };
+
+  const onApplyTransferenciasDiscricionariasDesembolsoFilters = async (nextPage = 1) => {
+    setTransferenciasDiscricionariasDesembolsoPage(nextPage);
+    setIsLoadingTransferenciasDiscricionariasDesembolsos(true);
+    setMessage("");
+    try {
+      await loadTransferenciasDiscricionariasDesembolsos(nextPage);
+      setMessage("Historico de desembolsos atualizado com sucesso.");
+    } catch (error) {
+      setMessage(error instanceof Error ? error.message : "Falha ao consultar historico de desembolsos.");
+    } finally {
+      setIsLoadingTransferenciasDiscricionariasDesembolsos(false);
+    }
+  };
+
+  const onClearTransferenciasDiscricionariasDesembolsos = () => {
+    setTransferenciasDiscricionariasDesembolsoFilters(emptyTransferenciasDiscricionariasDesembolsoFilters());
+    setTransferenciasDiscricionariasDesembolsoData(null);
+    setTransferenciasDiscricionariasDesembolsoPage(1);
+  };
+
+  const onApplyTransferenciasDiscricionariasProponenteDesembolsoFilters = async (nextPage = 1) => {
+    setTransferenciasDiscricionariasProponenteDesembolsoPage(nextPage);
+    setIsLoadingTransferenciasDiscricionariasProponenteDesembolsos(true);
+    setMessage("");
+    try {
+      await loadTransferenciasDiscricionariasDesembolsosPorProponente(nextPage);
+      setMessage("Relatorio de desembolsos por proponente atualizado com sucesso.");
+    } catch (error) {
+      setMessage(error instanceof Error ? error.message : "Falha ao consultar desembolsos por proponente.");
+    } finally {
+      setIsLoadingTransferenciasDiscricionariasProponenteDesembolsos(false);
+    }
+  };
+
+  const onClearTransferenciasDiscricionariasProponenteDesembolsos = () => {
+    setTransferenciasDiscricionariasProponenteDesembolsoFilters(
+      emptyTransferenciasDiscricionariasProponenteDesembolsoFilters()
+    );
+    setTransferenciasDiscricionariasProponenteDesembolsoData(null);
+    setTransferenciasDiscricionariasProponenteDesembolsoPage(1);
+  };
+
+  const onExportTransferenciasDiscricionariasProponenteDesembolsosPdf = async (mode: ReportPdfMode) => {
+    if (!token) {
+      return;
+    }
+
+    const cnpjDigits = transferenciasDiscricionariasProponenteDesembolsoFilters.cnpj.replace(/\D/g, "");
+    const nomeProponente = transferenciasDiscricionariasProponenteDesembolsoFilters.nome_proponente.trim();
+    if (cnpjDigits === "" && nomeProponente === "") {
+      setMessage("Informe CNPJ ou nome do proponente antes de exportar PDF.");
+      return;
+    }
+
+    setIsLoadingTransferenciasDiscricionariasProponenteDesembolsos(true);
+    setMessage("");
+    try {
+      const anoParsed = Number(transferenciasDiscricionariasProponenteDesembolsoFilters.ano);
+      const mesParsed = Number(transferenciasDiscricionariasProponenteDesembolsoFilters.mes);
+      const firstPage = await getTransferenciasDiscricionariasDesembolsosPorProponente(token, {
+        cnpj: cnpjDigits || undefined,
+        nome_proponente: nomeProponente || undefined,
+        ano: Number.isFinite(anoParsed) && anoParsed >= 2000 ? anoParsed : undefined,
+        mes: Number.isFinite(mesParsed) && mesParsed >= 1 && mesParsed <= 12 ? mesParsed : undefined,
+        page: 1,
+        page_size: 500
+      });
+
+      const allItems = [...firstPage.itens];
+      for (let page = 2; page <= firstPage.paginacao.total_paginas; page += 1) {
+        const next = await getTransferenciasDiscricionariasDesembolsosPorProponente(token, {
+          cnpj: cnpjDigits || undefined,
+          nome_proponente: nomeProponente || undefined,
+          ano: Number.isFinite(anoParsed) && anoParsed >= 2000 ? anoParsed : undefined,
+          mes: Number.isFinite(mesParsed) && mesParsed >= 1 && mesParsed <= 12 ? mesParsed : undefined,
+          page,
+          page_size: 500
+        });
+        allItems.push(...next.itens);
+      }
+
+      const fullReport: TransferenciaDiscricionariaDesembolsoProponenteResponse = {
+        ...firstPage,
+        itens: allItems,
+        paginacao: {
+          ...firstPage.paginacao,
+          pagina: 1,
+          tamanho_pagina: allItems.length,
+          total: allItems.length,
+          total_paginas: 1,
+          tem_anterior: false,
+          tem_proxima: false
+        }
+      };
+
+      exportTransferenciasDiscricionariasProponenteDesembolsosPdf(fullReport, mode);
+      setMessage("PDF de desembolsos por proponente gerado com sucesso.");
+    } catch (error) {
+      setMessage(error instanceof Error ? error.message : "Falha ao exportar PDF de desembolsos por proponente.");
+    } finally {
+      setIsLoadingTransferenciasDiscricionariasProponenteDesembolsos(false);
+    }
+  };
+
+  const onRefreshTransferenciasDiscricionariasSyncStatus = async () => {
+    if (!token) {
+      return;
+    }
+
+    setIsSyncingTransferenciasDiscricionarias(true);
+    setMessage("");
+    try {
+      const status = await getTransferenciasDiscricionariasSyncStatus(token);
+      setTransferenciasDiscricionariasSyncState(status);
+      setTransferenciasDiscricionariasData((prev) => (prev ? { ...prev, sincronizacao: status } : prev));
+      setMessage("Status da sincronizacao atualizado.");
+    } catch (error) {
+      setMessage(error instanceof Error ? error.message : "Falha ao atualizar status da sincronizacao.");
+    } finally {
+      setIsSyncingTransferenciasDiscricionarias(false);
+    }
+  };
+
+  const onSyncTransferenciasDiscricionarias = async () => {
+    if (!token || !canManageInstruments) {
+      return;
+    }
+
+    setIsSyncingTransferenciasDiscricionarias(true);
+    setMessage("");
+    try {
+      const result = await syncTransferenciasDiscricionarias(token, true);
+      const status = await getTransferenciasDiscricionariasSyncStatus(token);
+      setTransferenciasDiscricionariasSyncState(status);
+      setTransferenciasDiscricionariasData((prev) => (prev ? { ...prev, sincronizacao: status } : prev));
+      await loadTransferenciasDiscricionariasReport(1);
+      setMessage(
+        result.skipped
+          ? "Base de transferencias discricionarias ja estava atualizada."
+          : `Sincronizacao concluida: ${result.total_registros} registros carregados.`
+      );
+    } catch (error) {
+      setMessage(error instanceof Error ? error.message : "Falha ao sincronizar transferencias discricionarias.");
+    } finally {
+      setIsSyncingTransferenciasDiscricionarias(false);
+    }
   };
 
   const onApplyTicketReportFilters = async () => {
@@ -2612,6 +3621,183 @@ export default function App() {
       return;
     }
     exportTicketReportPdf(ticketReportData, mode);
+  };
+
+  const onExportTransferenciasDiscricionariasPdf = async (mode: ReportPdfMode) => {
+    if (!transferenciasDiscricionariasData) {
+      setMessage("Consulte o relatorio de transferencias discricionarias antes de exportar.");
+      return;
+    }
+
+    const popup = window.open("", "_blank");
+    if (!popup) {
+      setMessage("Nao foi possivel abrir a janela do PDF. Verifique o bloqueio de pop-ups do navegador.");
+      return;
+    }
+
+    popup.document.open();
+    popup.document.write(
+      '<!doctype html><html><head><meta charset="utf-8" /><title>Gerando PDF...</title></head><body style="font-family:Segoe UI,Arial,sans-serif;padding:24px;color:#102a43"><p>Gerando PDF analitico de transferencias discricionarias...</p></body></html>'
+    );
+    popup.document.close();
+
+    setIsBusy(true);
+    setMessage("");
+    try {
+      const desembolsoReports: TransferenciaDiscricionariaDesembolsoResponse[] = [];
+      let truncatedConvenios = false;
+      let partialConvenioCollection = false;
+      const failedConvenios: string[] = [];
+      let skippedSingleParcelaConvenios = 0;
+
+      if (mode === "analitico" && token) {
+        const anoParsed = Number(transferenciasDiscricionariasDesembolsoFilters.ano);
+        const mesParsed = Number(transferenciasDiscricionariasDesembolsoFilters.mes);
+        const anoFilter = Number.isFinite(anoParsed) && anoParsed >= 2000 ? anoParsed : undefined;
+        const mesFilter = Number.isFinite(mesParsed) && mesParsed >= 1 && mesParsed <= 12 ? mesParsed : undefined;
+
+        let conveniosToExport = parseConvenioList(transferenciasDiscricionariasDesembolsoFilters.nr_convenio);
+
+        if (conveniosToExport.length === 0) {
+          const convenioSet = new Set<string>();
+          const collectConvenios = (items: TransferenciaDiscricionariaResponse["itens"]) => {
+            for (const item of items) {
+              const convenio = item.nr_convenio?.trim();
+              if (!convenio) {
+                continue;
+              }
+              convenioSet.add(convenio);
+              if (convenioSet.size >= MAX_CONVENIOS_DESEMBOLSO_PDF) {
+                return true;
+              }
+            }
+            return false;
+          };
+
+          let reachedCap = collectConvenios(transferenciasDiscricionariasData.itens);
+
+          if (!reachedCap) {
+            const totalPages = transferenciasDiscricionariasData.paginacao.total_paginas;
+            const currentPage = transferenciasDiscricionariasData.paginacao.pagina;
+
+            for (let page = 1; page <= totalPages; page += 1) {
+              if (page === currentPage) {
+                continue;
+              }
+
+              try {
+                const nextPage = await getTransferenciasDiscricionarias(
+                  token,
+                  buildTransferenciasDiscricionariasQuery(
+                    page,
+                    TRANSFERENCIAS_PAGE_SIZE_MAX,
+                    transferenciasDiscricionariasFilters
+                  )
+                );
+                reachedCap = collectConvenios(nextPage.itens);
+                if (reachedCap) {
+                  break;
+                }
+              } catch {
+                partialConvenioCollection = true;
+                break;
+              }
+            }
+          }
+
+          conveniosToExport = Array.from(convenioSet);
+          truncatedConvenios = reachedCap;
+        }
+
+        if (conveniosToExport.length > MAX_CONVENIOS_DESEMBOLSO_PDF) {
+          conveniosToExport = conveniosToExport.slice(0, MAX_CONVENIOS_DESEMBOLSO_PDF);
+          truncatedConvenios = true;
+        }
+
+        for (const convenio of conveniosToExport) {
+          try {
+            const firstPage = await getTransferenciasDiscricionariasDesembolsos(token, {
+              nr_convenio: convenio,
+              ano: anoFilter,
+              mes: mesFilter,
+              page: 1,
+              page_size: DESEMBOLSOS_PAGE_SIZE_MAX
+            });
+
+            const allItems = [...firstPage.itens];
+            for (let page = 2; page <= firstPage.paginacao.total_paginas; page += 1) {
+              const next = await getTransferenciasDiscricionariasDesembolsos(token, {
+                nr_convenio: convenio,
+                ano: anoFilter,
+                mes: mesFilter,
+                page,
+                page_size: DESEMBOLSOS_PAGE_SIZE_MAX
+              });
+              allItems.push(...next.itens);
+            }
+
+            if (allItems.length > 1) {
+              desembolsoReports.push({
+                ...firstPage,
+                itens: allItems,
+                paginacao: {
+                  ...firstPage.paginacao,
+                  pagina: 1,
+                  tamanho_pagina: allItems.length,
+                  total: allItems.length,
+                  total_paginas: 1,
+                  tem_anterior: false,
+                  tem_proxima: false
+                }
+              });
+            } else if (allItems.length === 1) {
+              skippedSingleParcelaConvenios += 1;
+            }
+          } catch {
+            failedConvenios.push(convenio);
+          }
+        }
+      }
+
+      exportTransferenciasDiscricionariasPdf(transferenciasDiscricionariasData, mode, desembolsoReports, popup);
+
+      if (mode !== "analitico") {
+        setMessage("PDF de transferencias discricionarias gerado com sucesso.");
+      } else if (desembolsoReports.length === 0) {
+        setMessage(
+          "PDF analitico gerado sem secoes de desembolso (apenas convenios com mais de uma parcela sao listados)."
+        );
+      } else if (
+        truncatedConvenios ||
+        partialConvenioCollection ||
+        failedConvenios.length > 0 ||
+        skippedSingleParcelaConvenios > 0
+      ) {
+        const problemas: string[] = [];
+        if (truncatedConvenios) {
+          problemas.push(`limite de ${MAX_CONVENIOS_DESEMBOLSO_PDF} convenios`);
+        }
+        if (partialConvenioCollection) {
+          problemas.push("falha parcial na coleta de convenios");
+        }
+        if (failedConvenios.length > 0) {
+          problemas.push(`${failedConvenios.length} convenio(s) com erro ao buscar desembolsos`);
+        }
+        if (skippedSingleParcelaConvenios > 0) {
+          problemas.push(`${skippedSingleParcelaConvenios} convenio(s) ignorado(s) por terem apenas 1 parcela`);
+        }
+        setMessage(
+          `PDF analitico gerado com ${desembolsoReports.length} convenio(s) e ajustes por: ${problemas.join(", ")}.`
+        );
+      } else {
+        setMessage(`PDF analitico gerado com historico completo de desembolsos em ${desembolsoReports.length} convenio(s).`);
+      }
+    } catch (error) {
+      popup.close();
+      setMessage(error instanceof Error ? error.message : "Falha ao exportar PDF de transferencias discricionarias.");
+    } finally {
+      setIsBusy(false);
+    }
   };
 
   const onStartCreateInstrument = () => {
@@ -2713,107 +3899,136 @@ export default function App() {
     }
   };
 
-  const onChangeConveneteForm = <K extends keyof ConveneteForm>(field: K, value: ConveneteForm[K]) => {
-    setConveneteForm((prev) => ({ ...prev, [field]: value }));
+  const onSearchProponenteSugestoes = async () => {
+    if (!token) {
+      return;
+    }
+
+    const busca = proponenteCadastro.busca.trim();
+    if (busca.length < 2) {
+      setMessage("Digite ao menos 2 caracteres para buscar proponentes no Transferegov.");
+      setProponenteSugestoes([]);
+      setProponenteCadastro((prev) => ({ ...prev, cnpj_selecionado: "" }));
+      return;
+    }
+
+    setIsLoadingProponenteSugestoes(true);
+    setMessage("");
+    try {
+      const result = await searchProponentesDaBase(token, { q: busca, limit: 20 });
+      setProponenteSugestoes(result.itens);
+      setProponenteCadastro((prev) => ({
+        ...prev,
+        cnpj_selecionado: result.itens[0]?.cnpj ?? ""
+      }));
+
+      if (result.itens.length === 0) {
+        setMessage("Nenhum proponente encontrado na base do Transferegov para o termo informado.");
+      } else {
+        setMessage(`${result.itens.length} proponente(s) encontrado(s) na base do Transferegov.`);
+      }
+    } catch (error) {
+      setMessage(error instanceof Error ? error.message : "Falha ao buscar proponentes na base do Transferegov.");
+    } finally {
+      setIsLoadingProponenteSugestoes(false);
+    }
   };
 
-  const clearConveneteForm = () => {
-    setEditingConveneteId(null);
-    setConveneteForm(emptyConveneteForm());
-  };
-
-  const onSaveConvenete = async (event: FormEvent) => {
-    event.preventDefault();
-
+  const onAddProponenteAtendido = async () => {
     if (!token || !canManageInstruments) {
       return;
     }
 
-    const requiredFields = [
-      conveneteForm.nome,
-      conveneteForm.cnpj,
-      conveneteForm.endereco,
-      conveneteForm.bairro,
-      conveneteForm.cep,
-      conveneteForm.uf,
-      conveneteForm.cidade,
-      conveneteForm.tel,
-      conveneteForm.email
-    ];
-
-    if (requiredFields.some((field) => field.trim() === "")) {
-      setMessage("Preencha todos os campos de convenetes.");
+    const selected = proponenteSugestoes.find((item) => item.cnpj === proponenteCadastro.cnpj_selecionado);
+    if (!selected) {
+      setMessage("Selecione um proponente da lista para adicionar.");
       return;
     }
-
-    const payload: ConveneteForm = {
-      nome: conveneteForm.nome.trim(),
-      cnpj: conveneteForm.cnpj.trim(),
-      endereco: conveneteForm.endereco.trim(),
-      bairro: conveneteForm.bairro.trim(),
-      cep: conveneteForm.cep.trim(),
-      uf: conveneteForm.uf.trim().toUpperCase(),
-      cidade: conveneteForm.cidade.trim(),
-      tel: conveneteForm.tel.trim(),
-      email: conveneteForm.email.trim()
-    };
 
     setIsBusy(true);
     setMessage("");
     try {
-      if (editingConveneteId) {
-        await updateConvenete(token, editingConveneteId, payload);
-        setMessage("Convenete atualizado com sucesso.");
-      } else {
-        await createConvenete(token, payload);
-        setMessage("Convenete cadastrado com sucesso.");
-      }
+      const created = await createProponenteFromBase(token, {
+        cnpj: selected.cnpj,
+        nome_proponente: selected.nome_proponente,
+        uf: selected.uf ?? undefined,
+        cidade: selected.cidade ?? undefined
+      });
 
-      clearConveneteForm();
-      await loadConvenetes();
+      await Promise.all([loadProponentes(), loadInstruments(), loadDashboard()]);
+
+      const resumo = created.importacao;
+      if (resumo) {
+        setMessage(
+          `Proponente ${selected.nome_proponente} adicionado(a). Importacao automatica: ${resumo.criados} criado(s), ${resumo.atualizados} atualizado(s), ${resumo.ignorados} ignorado(s), ${resumo.erros} erro(s).`
+        );
+      } else {
+        setMessage(`Proponente ${selected.nome_proponente} adicionado(a) com sucesso.`);
+      }
     } catch (error) {
-      setMessage(error instanceof Error ? error.message : "Falha ao salvar convenete.");
+      setMessage(error instanceof Error ? error.message : "Falha ao adicionar proponente.");
     } finally {
       setIsBusy(false);
     }
   };
 
-  const onEditConvenete = (item: Convenete) => {
-    setEditingConveneteId(item.id);
-    setConveneteForm({
-      nome: item.nome,
-      cnpj: item.cnpj,
-      endereco: item.endereco,
-      bairro: item.bairro,
-      cep: item.cep,
-      uf: item.uf,
-      cidade: item.cidade,
-      tel: item.tel,
-      email: item.email
-    });
-    setMessage(`Editando convenete #${item.id}.`);
-  };
-
-  const onDeleteConvenete = async (id: number) => {
+  const onDeleteProponente = async (id: number) => {
     if (!token || !canDeactivateInstruments) {
       return;
     }
 
-    if (!window.confirm("Confirma remover este convenete?")) {
+    if (!window.confirm("Confirma remover este proponente da lista de atendimento?")) {
       return;
     }
 
     setIsBusy(true);
     setMessage("");
     try {
-      await deleteConvenete(token, id);
-      if (editingConveneteId === id) {
-        clearConveneteForm();
-      }
-      await loadConvenetes();
-      setMessage("Convenete removido com sucesso.");
+      await deleteProponente(token, id);
+      await loadProponentes();
+      setMessage("Proponente removido com sucesso.");
     } catch (error) {
-      setMessage(error instanceof Error ? error.message : "Falha ao remover convenete.");
+      setMessage(error instanceof Error ? error.message : "Falha ao remover proponente.");
+    } finally {
+      setIsBusy(false);
+    }
+  };
+
+  const onReimportProponenteInstrumentos = async (item: Proponente) => {
+    if (!token || !canManageInstruments) {
+      return;
+    }
+
+    setIsBusy(true);
+    setMessage("");
+    try {
+      const result = await reimportarInstrumentosProponente(token, item.id);
+      await Promise.all([loadInstruments(), loadDashboard()]);
+      setMessage(
+        `Reimportacao de ${item.nome}: ${result.importacao.criados} criado(s), ${result.importacao.atualizados} atualizado(s), ${result.importacao.ignorados} ignorado(s), ${result.importacao.erros} erro(s).`
+      );
+    } catch (error) {
+      setMessage(error instanceof Error ? error.message : "Falha ao reimportar instrumentos do proponente.");
+    } finally {
+      setIsBusy(false);
+    }
+  };
+
+  const onReimportTodosProponentesInstrumentos = async () => {
+    if (!token || !canManageInstruments) {
+      return;
+    }
+
+    setIsBusy(true);
+    setMessage("");
+    try {
+      const result = await reimportarInstrumentosTodosProponentes(token);
+      await Promise.all([loadInstruments(), loadDashboard()]);
+      setMessage(
+        `Reimportacao em lote concluida (${result.total_proponentes} proponente(s)): ${result.criados} criado(s), ${result.atualizados} atualizado(s), ${result.ignorados} ignorado(s), ${result.erros} erro(s).`
+      );
+    } catch (error) {
+      setMessage(error instanceof Error ? error.message : "Falha ao reimportar instrumentos de todos os proponentes.");
     } finally {
       setIsBusy(false);
     }
@@ -3225,63 +4440,22 @@ export default function App() {
     }
   };
 
-  const onAddRepasse = async () => {
-    if (!token || instrumentPageId === null || !canManageInstruments || !profileInstrument) {
-      return;
-    }
-
-    const valorRepasse = parseCurrencyInput(repasseValorInput);
-    if (Number.isNaN(valorRepasse) || valorRepasse <= 0) {
-      setMessage("Valor do repasse invalido.");
-      return;
-    }
-
-    if (!repasseDataInput) {
-      setMessage("Informe a data do repasse.");
+  const onSyncRepassesFromDesembolsos = async () => {
+    if (!token || !profileInstrument) {
       return;
     }
 
     setIsBusy(true);
     setMessage("");
     try {
-      const updated = await addInstrumentRepasse(token, instrumentPageId, {
-        data_repasse: repasseDataInput,
-        valor_repasse: valorRepasse
-      });
-
-      const updatedWithRepasses = await withLoadedRepasses(token, updated);
-
+      const updatedWithRepasses = await withLoadedRepasses(token, profileInstrument);
       setInstruments((prev) => prev.map((item) => (item.id === updatedWithRepasses.id ? updatedWithRepasses : item)));
       setSelectedInstrument(updatedWithRepasses);
       setReportData(null);
       setObraReportData(null);
-      setRepasseValorInput(formatCurrencyInput(0));
-      setRepasseDataInput(todayDate());
-      setMessage("Repasse cadastrado.");
+      setMessage("Lista de repasses sincronizada automaticamente pelos desembolsos.");
     } catch (error) {
-      setMessage(error instanceof Error ? error.message : "Falha ao cadastrar repasse.");
-    } finally {
-      setIsBusy(false);
-    }
-  };
-
-  const onDeleteRepasse = async (repasseId: number) => {
-    if (!token || instrumentPageId === null || !canManageInstruments) {
-      return;
-    }
-
-    setIsBusy(true);
-    setMessage("");
-    try {
-      const updated = await deleteInstrumentRepasse(token, instrumentPageId, repasseId);
-      const updatedWithRepasses = await withLoadedRepasses(token, updated);
-      setInstruments((prev) => prev.map((item) => (item.id === updatedWithRepasses.id ? updatedWithRepasses : item)));
-      setSelectedInstrument(updatedWithRepasses);
-      setReportData(null);
-      setObraReportData(null);
-      setMessage("Repasse removido.");
-    } catch (error) {
-      setMessage(error instanceof Error ? error.message : "Falha ao remover repasse.");
+      setMessage(error instanceof Error ? error.message : "Falha ao sincronizar repasses automaticamente.");
     } finally {
       setIsBusy(false);
     }
@@ -3292,9 +4466,22 @@ export default function App() {
       return;
     }
 
-    const valor = empresaVencedoraInput.trim();
-    if (valor === "") {
-      setMessage("Informe nome e CNPJ da empresa vencedora.");
+    const empresa = empresaVencedoraNomeInput.trim();
+    const cnpj = empresaVencedoraCnpjInput.trim();
+    const valorVencedor = parseCurrencyInput(empresaVencedoraValorInput);
+
+    if (empresa === "") {
+      setMessage("Informe a empresa vencedora.");
+      return;
+    }
+
+    if (cnpj === "") {
+      setMessage("Informe o CNPJ da empresa vencedora.");
+      return;
+    }
+
+    if (Number.isNaN(valorVencedor) || valorVencedor <= 0) {
+      setMessage("Informe o valor vencedor em reais.");
       return;
     }
 
@@ -3302,12 +4489,15 @@ export default function App() {
     setMessage("");
     try {
       const updated = await updateInstrument(token, profileInstrument.id, {
-        orgao_executor: valor
+        empresa_vencedora: empresa,
+        cnpj_vencedora: cnpj,
+        valor_vencedor: valorVencedor,
+        orgao_executor: `${empresa} - ${cnpj}`
       });
       const updatedWithRepasses = await withLoadedRepasses(token, updated);
       setInstruments((prev) => prev.map((item) => (item.id === updatedWithRepasses.id ? updatedWithRepasses : item)));
       setSelectedInstrument(updatedWithRepasses);
-      setMessage("Empresa vencedora salva com sucesso.");
+      setMessage("Dados da empresa vencedora salvos com sucesso.");
     } catch (error) {
       setMessage(error instanceof Error ? error.message : "Falha ao salvar empresa vencedora.");
     } finally {
@@ -3346,6 +4536,135 @@ export default function App() {
     } catch (error) {
       console.error("[documents] Falha ao listar documentos", error);
       setMessage("Falha ao carregar documentos.");
+    }
+  };
+
+  const onLoadDocumentAiRequests = async (override?: {
+    status?: "" | DocumentAiRequestStatus;
+    prioridade?: "" | DocumentAiRequestPriority;
+    q?: string;
+  }) => {
+    if (!token) {
+      return;
+    }
+
+    setIsLoadingDocumentAiRequests(true);
+    try {
+      const status = override?.status ?? documentAiRequestFilterStatus;
+      const prioridade = override?.prioridade ?? documentAiRequestFilterPriority;
+      const q = override?.q ?? documentAiRequestFilterQuery;
+      const result = await listDocumentAiRequests(token, {
+        status: status || undefined,
+        prioridade: prioridade || undefined,
+        q: q.trim() || undefined,
+        limit: 100
+      });
+      setDocumentAiRequests(result.itens);
+    } catch (error) {
+      setMessage(error instanceof Error ? error.message : "Falha ao carregar solicitacoes de documentos.");
+    } finally {
+      setIsLoadingDocumentAiRequests(false);
+    }
+  };
+
+  const onCreateDocumentAiRequest = async () => {
+    if (!token) {
+      return;
+    }
+
+    const titulo = documentAiRequestForm.titulo.trim();
+    if (titulo.length < 3) {
+      setMessage("Informe um titulo com pelo menos 3 caracteres para a solicitacao.");
+      return;
+    }
+
+    setBusyDocumentAiRequestId(-1);
+    setMessage("");
+    try {
+      await createDocumentAiRequest(token, {
+        titulo,
+        descricao: documentAiRequestForm.descricao.trim() || undefined,
+        prioridade: documentAiRequestForm.prioridade,
+        prazo: documentAiRequestForm.prazo ? new Date(`${documentAiRequestForm.prazo}T23:59:59`).toISOString() : undefined
+      });
+      setDocumentAiRequestForm((prev) => ({ ...prev, titulo: "", descricao: "", prazo: "" }));
+      setMessage("Solicitacao criada com sucesso.");
+      await onLoadDocumentAiRequests();
+    } catch (error) {
+      setMessage(error instanceof Error ? error.message : "Falha ao criar solicitacao de documentos.");
+    } finally {
+      setBusyDocumentAiRequestId(null);
+    }
+  };
+
+  const onGenerateDocumentAiRequestLink = async (requestId: number) => {
+    if (!token) {
+      return;
+    }
+
+    setBusyDocumentAiRequestId(requestId);
+    setMessage("");
+    try {
+      const result = await createDocumentAiRequestPublicLink(token, requestId, {
+        validade_dias: documentAiRequestForm.validadeDias
+      });
+      await navigator.clipboard.writeText(result.link_publico);
+      setMessage("Link publico gerado e copiado para a area de transferencia.");
+      await onLoadDocumentAiRequests();
+    } catch (error) {
+      setMessage(error instanceof Error ? error.message : "Falha ao gerar link publico.");
+    } finally {
+      setBusyDocumentAiRequestId(null);
+    }
+  };
+
+  const onDeactivateDocumentAiRequestLink = async (requestId: number) => {
+    if (!token) {
+      return;
+    }
+
+    setBusyDocumentAiRequestId(requestId);
+    setMessage("");
+    try {
+      await deactivateDocumentAiRequestPublicLink(token, requestId);
+      setMessage("Link publico desativado.");
+      await onLoadDocumentAiRequests();
+    } catch (error) {
+      setMessage(error instanceof Error ? error.message : "Falha ao desativar link publico.");
+    } finally {
+      setBusyDocumentAiRequestId(null);
+    }
+  };
+
+  const onCancelDocumentAiRequest = async (requestId: number) => {
+    if (!token) {
+      return;
+    }
+
+    setBusyDocumentAiRequestId(requestId);
+    setMessage("");
+    try {
+      await updateDocumentAiRequest(token, requestId, { status: "CANCELADA" });
+      setMessage("Solicitacao cancelada.");
+      await onLoadDocumentAiRequests();
+    } catch (error) {
+      setMessage(error instanceof Error ? error.message : "Falha ao cancelar solicitacao.");
+    } finally {
+      setBusyDocumentAiRequestId(null);
+    }
+  };
+
+  const onCopyDocumentAiRequestLink = async (link: string) => {
+    if (!link) {
+      setMessage("Nenhum link ativo para copiar.");
+      return;
+    }
+
+    try {
+      await navigator.clipboard.writeText(toAbsoluteUrl(link));
+      setMessage("Link copiado para a area de transferencia.");
+    } catch (error) {
+      setMessage(error instanceof Error ? error.message : "Falha ao copiar link.");
     }
   };
 
@@ -3737,10 +5056,10 @@ export default function App() {
             />
           </label>
           <label>
-            Convenete
-            <select value={form.convenete_id} onChange={(e) => onChangeForm("convenete_id", e.target.value)}>
+            Proponente
+            <select value={form.proponente_id} onChange={(e) => onChangeForm("proponente_id", e.target.value)}>
               <option value="">Nao associado</option>
-              {convenetes.map((item) => (
+              {proponentes.map((item) => (
                 <option key={item.id} value={item.id}>
                   {item.nome}
                 </option>
@@ -3892,19 +5211,43 @@ export default function App() {
             <p className="subtitle">Visao completa para ciclo de instrumentos e propostas.</p>
 
             <div className="feature-grid">
-              <div className="feature-item">
+              <div className="feature-item feature-item-instrumentos">
+                <span className="feature-icon" aria-hidden="true">
+                  <svg viewBox="0 0 24 24" focusable="false">
+                    <path d="M3.75 6.75a2.25 2.25 0 0 1 2.25-2.25h4.2a2.25 2.25 0 0 1 1.6.66l.9.9c.42.42.99.66 1.6.66h3.75a2.25 2.25 0 0 1 2.25 2.25v8.25a2.25 2.25 0 0 1-2.25 2.25H6a2.25 2.25 0 0 1-2.25-2.25V6.75Z" />
+                  </svg>
+                </span>
                 <p className="eyebrow">Instrumentos</p>
                 <p>CRUD completo com filtros por status, concedente, vigencia e ativo.</p>
               </div>
-              <div className="feature-item">
+              <div className="feature-item feature-item-checklist">
+                <span className="feature-icon" aria-hidden="true">
+                  <svg viewBox="0 0 24 24" focusable="false">
+                    <path d="M8.25 7.5h9M8.25 12h9m-9 4.5h9" />
+                    <path d="M4.5 7.5h.008v.008H4.5V7.5Zm0 4.5h.008v.008H4.5V12Zm0 4.5h.008v.008H4.5V16.5Z" />
+                  </svg>
+                </span>
                 <p className="eyebrow">Checklist</p>
                 <p>Controle de documentos obrigatorios com upload, download e pendencias.</p>
               </div>
-              <div className="feature-item">
+              <div className="feature-item feature-item-auditoria">
+                <span className="feature-icon" aria-hidden="true">
+                  <svg viewBox="0 0 24 24" focusable="false">
+                    <path d="M6.75 3.75h7.5l3 3v13.5h-10.5a2.25 2.25 0 0 1-2.25-2.25V6a2.25 2.25 0 0 1 2.25-2.25Z" />
+                    <path d="M14.25 3.75V6a.75.75 0 0 0 .75.75h2.25M8.25 10.5h7.5m-7.5 3h7.5m-7.5 3h4.5" />
+                  </svg>
+                </span>
                 <p className="eyebrow">Auditoria</p>
                 <p>Historico de alteracoes com usuario, data e campos alterados.</p>
               </div>
-              <div className="feature-item">
+              <div className="feature-item feature-item-painel">
+                <span className="feature-icon" aria-hidden="true">
+                  <svg viewBox="0 0 24 24" focusable="false">
+                    <path d="M4.5 19.5h15" />
+                    <path d="M7.5 16.5v-4.5m4.5 4.5V8.25m4.5 8.25v-6" />
+                    <path d="M6.75 9.75 12 6.75l4.5 2.25" />
+                  </svg>
+                </span>
                 <p className="eyebrow">Painel</p>
                 <p>KPIs, alertas de prazo e exportacao CSV/Excel para analise rapida.</p>
               </div>
@@ -3919,6 +5262,7 @@ export default function App() {
 
           <section className="card auth-card">
             <form onSubmit={onLogin} className="form-grid">
+              <img className="auth-logo" src="/api/v1/public/brand-logo" alt="NC Convenios" />
               <p className="subtitle">Acesso restrito. Novos usuarios sao cadastrados somente por administrador.</p>
 
               <label>
@@ -3977,10 +5321,10 @@ export default function App() {
           </button>
           <button
             type="button"
-            className={activeView === "convenetes" ? "menu-item active" : "menu-item"}
-            onClick={() => onChangeView("convenetes")}
+            className={activeView === "proponentes" ? "menu-item active" : "menu-item"}
+            onClick={() => onChangeView("proponentes")}
           >
-            Convenetes
+            Proponente
           </button>
           {isAdmin && (
             <button
@@ -3991,16 +5335,6 @@ export default function App() {
               Usuarios
             </button>
           )}
-          <button
-            type="button"
-            className={activeView === "assinaturas" && signatureTab === "certificados" ? "menu-item active" : "menu-item"}
-            onClick={() => {
-              setSignatureTab("certificados");
-              onChangeView("assinaturas");
-            }}
-          >
-            Certificados
-          </button>
           <button
             type="button"
             className={activeView === "assinaturas" && signatureTab === "documentos" ? "menu-item active" : "menu-item"}
@@ -4079,8 +5413,8 @@ export default function App() {
                     ? isInstrumentProfileView
                       ? `Acompanhamento do instrumento #${instrumentPageId}`
                       : "Instrumentos e Propostas"
-                    : activeView === "convenetes"
-                      ? "Cadastro de Convenetes"
+                    : activeView === "proponentes"
+                      ? "Cadastro de Proponentes"
                     : activeView === "usuarios"
                       ? "Gestao de Usuarios"
                     : activeView === "auditoria"
@@ -4371,13 +5705,13 @@ export default function App() {
                   </label>
 
                   <label>
-                    Convenente
+                    Proponente
                     <select
-                      value={filters.convenete_id}
-                      onChange={(e) => setFilters((prev) => ({ ...prev, convenete_id: e.target.value }))}
+                      value={filters.proponente_id}
+                      onChange={(e) => setFilters((prev) => ({ ...prev, proponente_id: e.target.value }))}
                     >
                       <option value="">Todos</option>
-                      {convenetes.map((item) => (
+                      {proponentes.map((item) => (
                         <option key={item.id} value={item.id}>
                           {item.nome}
                         </option>
@@ -4520,9 +5854,10 @@ export default function App() {
                           {formatBankInfo(profileInstrument) || "-"}
                         </p>
                         <p>
-                          <strong>Convenete:</strong>{" "}
-                          {profileInstrument.convenete_id
-                            ? (conveneteNameById.get(profileInstrument.convenete_id) ?? `#${profileInstrument.convenete_id}`)
+                          <strong>Proponente:</strong>{" "}
+                          {(profileInstrument.proponente_id ?? profileInstrument.convenete_id)
+                            ? (proponenteNameById.get(profileInstrument.proponente_id ?? profileInstrument.convenete_id ?? 0) ??
+                              `#${profileInstrument.proponente_id ?? profileInstrument.convenete_id}`)
                             : "-"}
                         </p>
                         <p>
@@ -4568,25 +5903,14 @@ export default function App() {
                               <span style={{ width: `${repassePercentualAtual}%` }} />
                             </div>
 
-                            {canManageInstruments && (
-                              <div className="repasse-form">
-                                <input
-                                  type="date"
-                                  value={repasseDataInput}
-                                  onChange={(e) => setRepasseDataInput(e.target.value)}
-                                />
-                                <input
-                                  type="text"
-                                  inputMode="numeric"
-                                  value={repasseValorInput}
-                                  onChange={(e) => setRepasseValorInput(normalizeCurrencyInput(e.target.value))}
-                                  placeholder="Valor do repasse"
-                                />
-                                <button type="button" onClick={onAddRepasse} disabled={isBusy}>
-                                  Adicionar repasse
-                                </button>
-                              </div>
-                            )}
+                            <p className="subtitle">
+                              Lista sincronizada automaticamente pelos desembolsos do Transferegov.
+                            </p>
+                            <div className="action-row compact">
+                              <button type="button" className="secondary" onClick={onSyncRepassesFromDesembolsos} disabled={isBusy}>
+                                Sincronizar agora
+                              </button>
+                            </div>
 
                             <div className="repasse-list">
                               {profileInstrumentRepasses.length === 0 ? (
@@ -4596,16 +5920,7 @@ export default function App() {
                                   <div key={repasse.id} className="repasse-item">
                                     <span>{repasse.data_repasse}</span>
                                     <strong>{formatCurrency(repasse.valor_repasse)}</strong>
-                                    {canManageInstruments && (
-                                      <button
-                                        type="button"
-                                        className="ghost"
-                                        onClick={() => onDeleteRepasse(repasse.id)}
-                                        disabled={isBusy}
-                                      >
-                                        Remover
-                                      </button>
-                                    )}
+                                    <span className="subtitle">Origem: Desembolso</span>
                                   </div>
                                 ))
                               )}
@@ -4617,7 +5932,11 @@ export default function App() {
                           <div className="work-progress-card">
                             <h3>Acompanhamento de obra</h3>
                             <p className="subtitle">
-                              Empresa vencedora (nome/CNPJ): {profileInstrument.orgao_executor?.trim() || "Nao informada"}
+                              Empresa vencedora: {profileInstrument.empresa_vencedora?.trim() || "Nao informada"} | CNPJ: {" "}
+                              {profileInstrument.cnpj_vencedora?.trim() || "Nao informado"}
+                            </p>
+                            <p className="subtitle">
+                              Valor vencedor: {formatCurrency(profileInstrument.valor_vencedor ?? 0)}
                             </p>
                             <p className="subtitle">
                               Valor ja repassado: {formatCurrency(profileInstrument.valor_ja_repassado)} | Valor total de repasse: {" "}
@@ -4851,7 +6170,7 @@ export default function App() {
                           <div className="checklist-head">
                             <h3>Fluxo de liberacao do recurso federal - {FLOW_TYPE_LABELS[currentFlowType]}</h3>
                             <div className="checklist-head-meta">
-                              {canManageInstruments && (
+                              {canManageInstruments && allowChecklistExternalLink && (
                                 <label className="checklist-validity-control">
                                   Validade do link externo
                                   <select
@@ -4964,22 +6283,49 @@ export default function App() {
 
                                         {stage === "PROCESSO_EXECUCAO_LICITACAO" && (
                                           <div className="work-progress-card">
-                                            <h5>Empresa vencedora da licitacao (nome e CNPJ)</h5>
+                                            <h5>Dados do vencedor da licitacao</h5>
                                             {canManageInstruments ? (
-                                              <div className="action-row compact">
-                                                <input
-                                                  value={empresaVencedoraInput}
-                                                  onChange={(e) => setEmpresaVencedoraInput(e.target.value)}
-                                                  placeholder="Ex.: Construtora Exemplo LTDA - 12.345.678/0001-90"
-                                                />
-                                                <button type="button" onClick={onSaveEmpresaVencedora} disabled={isBusy}>
-                                                  Salvar empresa
-                                                </button>
-                                              </div>
+                                              <>
+                                                <div className="filters-grid columns-3">
+                                                  <input
+                                                    value={empresaVencedoraNomeInput}
+                                                    onChange={(e) => setEmpresaVencedoraNomeInput(e.target.value)}
+                                                    placeholder="Empresa vencedora"
+                                                  />
+                                                  <input
+                                                    value={empresaVencedoraCnpjInput}
+                                                    onChange={(e) => setEmpresaVencedoraCnpjInput(e.target.value)}
+                                                    placeholder="CNPJ da vencedora"
+                                                  />
+                                                  <input
+                                                    value={empresaVencedoraValorInput}
+                                                    onChange={(e) => setEmpresaVencedoraValorInput(e.target.value)}
+                                                    onBlur={() =>
+                                                      setEmpresaVencedoraValorInput(
+                                                        normalizeCurrencyInput(empresaVencedoraValorInput)
+                                                      )
+                                                    }
+                                                    placeholder="Valor vencedor (R$)"
+                                                  />
+                                                </div>
+                                                <div className="action-row compact">
+                                                  <button type="button" onClick={onSaveEmpresaVencedora} disabled={isBusy}>
+                                                    Salvar dados do vencedor
+                                                  </button>
+                                                </div>
+                                              </>
                                             ) : (
-                                              <p className="subtitle">
-                                                {profileInstrument?.orgao_executor?.trim() || "Empresa vencedora nao informada."}
-                                              </p>
+                                              <>
+                                                <p className="subtitle">
+                                                  Empresa: {profileInstrument?.empresa_vencedora?.trim() || "Nao informada"}
+                                                </p>
+                                                <p className="subtitle">
+                                                  CNPJ: {profileInstrument?.cnpj_vencedora?.trim() || "Nao informado"}
+                                                </p>
+                                                <p className="subtitle">
+                                                  Valor vencedor: {formatCurrency(profileInstrument?.valor_vencedor ?? 0)}
+                                                </p>
+                                              </>
                                             )}
                                           </div>
                                         )}
@@ -5234,7 +6580,7 @@ export default function App() {
                                                     </p>
                                                     <p className="subtitle">Status: {item.status_label ?? statusLabelMap[item.status]}</p>
                                                     {item.observacao && <p className="subtitle">{item.observacao}</p>}
-                                                    {item.solicitacao_externa && (
+                                                    {allowChecklistExternalLink && item.solicitacao_externa && (
                                                       <div className="external-link-box">
                                                         <p className="subtitle">
                                                           Link externo ativo ate {new Date(item.solicitacao_externa.expira_em).toLocaleString("pt-BR")}
@@ -5303,7 +6649,7 @@ export default function App() {
                                                     )}
                                                   </div>
                                                   <div className="action-row compact checklist-actions">
-                                                    {canManageInstruments && (
+                                                    {canManageInstruments && allowChecklistExternalLink && (
                                                       <button
                                                         type="button"
                                                         className="ghost"
@@ -5313,7 +6659,7 @@ export default function App() {
                                                         {item.solicitacao_externa ? "Gerar novo link externo" : "Gerar link externo"}
                                                       </button>
                                                     )}
-                                                    {canManageInstruments && item.solicitacao_externa && (
+                                                    {canManageInstruments && allowChecklistExternalLink && item.solicitacao_externa && (
                                                       <button
                                                         type="button"
                                                         className="danger"
@@ -5345,7 +6691,7 @@ export default function App() {
                                                       <button
                                                         type="button"
                                                         className="danger"
-                                                        onClick={() => onDeleteChecklistItem(item.id)}
+                                                        onClick={() => onDeleteChecklistItem(item.id, item.nome_documento)}
                                                         disabled={busyChecklistItemId === item.id || busyExternalLinkItemId === item.id}
                                                       >
                                                         Excluir item
@@ -5436,103 +6782,91 @@ export default function App() {
                 </>
               )}
             </section>
-          ) : activeView === "convenetes" ? (
+          ) : activeView === "proponentes" ? (
             <section className="dashboard">
-              {canManageInstruments && (
-                <div className="card editor-card">
-                  <h3>{editingConveneteId ? `Editar convenete #${editingConveneteId}` : "Novo convenete"}</h3>
-                  <form className="form-grid" onSubmit={onSaveConvenete}>
-                    <div className="filters-grid columns-4">
-                      <label>
-                        NOME *
-                        <input
-                          value={conveneteForm.nome}
-                          onChange={(e) => onChangeConveneteForm("nome", e.target.value)}
-                          required
-                        />
-                      </label>
-                      <label>
-                        CNPJ *
-                        <input
-                          value={conveneteForm.cnpj}
-                          onChange={(e) => onChangeConveneteForm("cnpj", e.target.value)}
-                          required
-                        />
-                      </label>
-                      <label>
-                        ENDERECO *
-                        <input
-                          value={conveneteForm.endereco}
-                          onChange={(e) => onChangeConveneteForm("endereco", e.target.value)}
-                          required
-                        />
-                      </label>
-                      <label>
-                        BAIRRO *
-                        <input
-                          value={conveneteForm.bairro}
-                          onChange={(e) => onChangeConveneteForm("bairro", e.target.value)}
-                          required
-                        />
-                      </label>
-                      <label>
-                        CEP *
-                        <input
-                          value={conveneteForm.cep}
-                          onChange={(e) => onChangeConveneteForm("cep", e.target.value)}
-                          required
-                        />
-                      </label>
-                      <label>
-                        UF *
-                        <input
-                          value={conveneteForm.uf}
-                          maxLength={2}
-                          onChange={(e) => onChangeConveneteForm("uf", e.target.value)}
-                          required
-                        />
-                      </label>
-                      <label>
-                        CIDADE *
-                        <input
-                          value={conveneteForm.cidade}
-                          onChange={(e) => onChangeConveneteForm("cidade", e.target.value)}
-                          required
-                        />
-                      </label>
-                      <label>
-                        TEL *
-                        <input
-                          value={conveneteForm.tel}
-                          onChange={(e) => onChangeConveneteForm("tel", e.target.value)}
-                          required
-                        />
-                      </label>
-                      <label>
-                        EMAIL *
-                        <input
-                          type="email"
-                          value={conveneteForm.email}
-                          onChange={(e) => onChangeConveneteForm("email", e.target.value)}
-                          required
-                        />
-                      </label>
-                    </div>
-
-                    <div className="action-row">
-                      <button type="submit" disabled={isBusy}>
-                        {editingConveneteId ? "Salvar alteracoes" : "Cadastrar convenete"}
-                      </button>
-                      <button type="button" className="secondary" onClick={clearConveneteForm}>
-                        Limpar formulario
-                      </button>
-                    </div>
-                  </form>
+              <div className="card editor-card">
+                <h3>Selecionar proponentes atendidos (base Transferegov)</h3>
+                <div className="filters-grid columns-4">
+                  <label>
+                    Buscar proponente
+                    <input
+                      value={proponenteCadastro.busca}
+                      onChange={(e) =>
+                        setProponenteCadastro((prev) => ({
+                          ...prev,
+                          busca: e.target.value
+                        }))
+                      }
+                      placeholder="Nome ou CNPJ"
+                    />
+                  </label>
+                  <label>
+                    Selecione o proponente
+                    <select
+                      value={proponenteCadastro.cnpj_selecionado}
+                      onChange={(e) =>
+                        setProponenteCadastro((prev) => ({
+                          ...prev,
+                          cnpj_selecionado: e.target.value
+                        }))
+                      }
+                      disabled={proponenteSugestoes.length === 0}
+                    >
+                      <option value="">Selecione</option>
+                      {proponenteSugestoes.map((item) => (
+                        <option key={`${item.cnpj}-${item.nome_proponente}`} value={item.cnpj}>
+                          {item.nome_proponente} ({formatCnpj(item.cnpj)})
+                          {item.cidade || item.uf ? ` - ${item.cidade ?? ""}${item.cidade && item.uf ? "/" : ""}${item.uf ?? ""}` : ""}
+                        </option>
+                      ))}
+                    </select>
+                  </label>
                 </div>
-              )}
+
+                <div className="action-row">
+                  <button
+                    type="button"
+                    onClick={() => void onSearchProponenteSugestoes()}
+                    disabled={isLoadingProponenteSugestoes || isBusy}
+                  >
+                    {isLoadingProponenteSugestoes ? "Buscando..." : "Buscar na base"}
+                  </button>
+                  {canManageInstruments && (
+                    <button
+                      type="button"
+                      className="secondary"
+                      onClick={() => void onAddProponenteAtendido()}
+                      disabled={isBusy || proponenteCadastro.cnpj_selecionado.trim() === ""}
+                    >
+                      Adicionar proponente atendido
+                    </button>
+                  )}
+                  <button
+                    type="button"
+                    className="secondary"
+                    onClick={() => {
+                      setProponenteCadastro(emptyProponenteCadastroState());
+                      setProponenteSugestoes([]);
+                    }}
+                    disabled={isBusy || isLoadingProponenteSugestoes}
+                  >
+                    Limpar busca
+                  </button>
+                  {canManageInstruments && (
+                    <button
+                      type="button"
+                      className="secondary"
+                      onClick={() => void onReimportTodosProponentesInstrumentos()}
+                      disabled={isBusy}
+                    >
+                      Sincronizar todos atendidos
+                    </button>
+                  )}
+                </div>
+              </div>
 
               <div className="card table-card">
-                <h3>Lista de convenetes</h3>
+                <h3>Lista de proponentes atendidos</h3>
                 <div className="table-wrap">
                   <table>
                     <thead>
@@ -5541,34 +6875,35 @@ export default function App() {
                         <th>NOME</th>
                         <th>CNPJ</th>
                         <th>CIDADE/UF</th>
-                        <th>TEL</th>
-                        <th>EMAIL</th>
                         <th>ACOES</th>
                       </tr>
                     </thead>
                     <tbody>
-                      {convenetes.length === 0 ? (
+                      {proponentes.length === 0 ? (
                         <tr>
-                          <td colSpan={7}>Nenhum convenete cadastrado.</td>
+                          <td colSpan={5}>Nenhum proponente selecionado.</td>
                         </tr>
                       ) : (
-                        convenetes.map((item) => (
+                        proponentes.map((item) => (
                           <tr key={item.id}>
                             <td>{item.id}</td>
                             <td>{item.nome}</td>
-                            <td>{item.cnpj}</td>
+                            <td>{formatCnpj(item.cnpj)}</td>
                             <td>{item.cidade}/{item.uf}</td>
-                            <td>{item.tel}</td>
-                            <td>{item.email}</td>
                             <td>
                               <div className="action-row compact">
                                 {canManageInstruments && (
-                                  <button type="button" onClick={() => onEditConvenete(item)}>
-                                    Editar
+                                  <button
+                                    type="button"
+                                    className="secondary"
+                                    onClick={() => void onReimportProponenteInstrumentos(item)}
+                                    disabled={isBusy}
+                                  >
+                                    Reimportar instrumentos
                                   </button>
                                 )}
                                 {canDeactivateInstruments && (
-                                  <button type="button" className="danger" onClick={() => onDeleteConvenete(item.id)}>
+                                  <button type="button" className="danger" onClick={() => void onDeleteProponente(item.id)}>
                                     Remover
                                   </button>
                                 )}
@@ -6577,6 +7912,231 @@ export default function App() {
               {signatureTab === "documentos" && (
                 <>
                   <div className="card editor-card">
+                    <h3>Solicitar documentos por link</h3>
+                    <div className="filters-grid columns-5">
+                      <label>
+                        Titulo *
+                        <input
+                          value={documentAiRequestForm.titulo}
+                          onChange={(e) => setDocumentAiRequestForm((prev) => ({ ...prev, titulo: e.target.value }))}
+                          placeholder="Ex.: Balancete do mes"
+                        />
+                      </label>
+                      <label>
+                        Prioridade
+                        <select
+                          value={documentAiRequestForm.prioridade}
+                          onChange={(e) =>
+                            setDocumentAiRequestForm((prev) => ({
+                              ...prev,
+                              prioridade: e.target.value as DocumentAiRequestPriority
+                            }))
+                          }
+                        >
+                          {DOCUMENT_REQUEST_PRIORITY_OPTIONS.map((option) => (
+                            <option key={option} value={option}>
+                              {DOCUMENT_REQUEST_PRIORITY_LABELS[option]}
+                            </option>
+                          ))}
+                        </select>
+                      </label>
+                      <label>
+                        Prazo (opcional)
+                        <input
+                          type="date"
+                          value={documentAiRequestForm.prazo}
+                          onChange={(e) => setDocumentAiRequestForm((prev) => ({ ...prev, prazo: e.target.value }))}
+                        />
+                      </label>
+                      <label>
+                        Validade do link
+                        <select
+                          value={String(documentAiRequestForm.validadeDias)}
+                          onChange={(e) =>
+                            setDocumentAiRequestForm((prev) => ({
+                              ...prev,
+                              validadeDias: Number(e.target.value)
+                            }))
+                          }
+                        >
+                          {[1, 3, 7, 15, 30].map((option) => (
+                            <option key={option} value={String(option)}>
+                              {option} dia(s)
+                            </option>
+                          ))}
+                        </select>
+                      </label>
+                      <label>
+                        Filtro (texto)
+                        <input
+                          value={documentAiRequestFilterQuery}
+                          onChange={(e) => setDocumentAiRequestFilterQuery(e.target.value)}
+                          placeholder="Buscar solicitacoes"
+                        />
+                      </label>
+                    </div>
+                    <label>
+                      Descricao
+                      <textarea
+                        rows={2}
+                        value={documentAiRequestForm.descricao}
+                        onChange={(e) => setDocumentAiRequestForm((prev) => ({ ...prev, descricao: e.target.value }))}
+                        placeholder="Orientacoes para quem vai enviar os PDFs"
+                      />
+                    </label>
+                    <div className="action-row">
+                      <button type="button" onClick={onCreateDocumentAiRequest} disabled={busyDocumentAiRequestId === -1}>
+                        {busyDocumentAiRequestId === -1 ? "Criando..." : "Criar solicitacao"}
+                      </button>
+                      <label>
+                        Status
+                        <select
+                          value={documentAiRequestFilterStatus}
+                          onChange={(e) => setDocumentAiRequestFilterStatus(e.target.value as "" | DocumentAiRequestStatus)}
+                        >
+                          <option value="">Todos</option>
+                          <option value="ABERTA">Aberta</option>
+                          <option value="ATENDIDA">Atendida</option>
+                          <option value="CANCELADA">Cancelada</option>
+                        </select>
+                      </label>
+                      <label>
+                        Prioridade
+                        <select
+                          value={documentAiRequestFilterPriority}
+                          onChange={(e) =>
+                            setDocumentAiRequestFilterPriority(e.target.value as "" | DocumentAiRequestPriority)
+                          }
+                        >
+                          <option value="">Todas</option>
+                          {DOCUMENT_REQUEST_PRIORITY_OPTIONS.map((option) => (
+                            <option key={option} value={option}>
+                              {DOCUMENT_REQUEST_PRIORITY_LABELS[option]}
+                            </option>
+                          ))}
+                        </select>
+                      </label>
+                      <button
+                        type="button"
+                        className="secondary"
+                        onClick={() =>
+                          onLoadDocumentAiRequests({
+                            status: documentAiRequestFilterStatus,
+                            prioridade: documentAiRequestFilterPriority,
+                            q: documentAiRequestFilterQuery
+                          })
+                        }
+                        disabled={isLoadingDocumentAiRequests}
+                      >
+                        {isLoadingDocumentAiRequests ? "Atualizando..." : "Aplicar filtros"}
+                      </button>
+                    </div>
+                  </div>
+
+                  <div className="card table-card">
+                    <h3>Solicitacoes de documentos</h3>
+                    {isLoadingDocumentAiRequests ? (
+                      <p>Carregando solicitacoes...</p>
+                    ) : documentAiRequests.length === 0 ? (
+                      <p>Nenhuma solicitacao registrada.</p>
+                    ) : (
+                      <div className="table-wrap">
+                        <table>
+                          <thead>
+                            <tr>
+                              <th>Titulo</th>
+                              <th>Status</th>
+                              <th>Prioridade</th>
+                              <th>Prazo</th>
+                              <th>Documentos</th>
+                              <th>Link externo</th>
+                              <th>Acoes</th>
+                            </tr>
+                          </thead>
+                          <tbody>
+                            {documentAiRequests.map((requestItem) => {
+                              const isBusyRequest = busyDocumentAiRequestId === requestItem.id;
+                              return (
+                                <tr key={requestItem.id}>
+                                  <td>
+                                    <p>{requestItem.titulo}</p>
+                                    {requestItem.descricao ? <p className="subtitle">{requestItem.descricao}</p> : null}
+                                  </td>
+                                  <td>
+                                    <span className={`status-chip ${requestItem.status.toLowerCase()}`}>
+                                      {DOCUMENT_REQUEST_STATUS_LABELS[requestItem.status]}
+                                    </span>
+                                  </td>
+                                  <td>{DOCUMENT_REQUEST_PRIORITY_LABELS[requestItem.prioridade]}</td>
+                                  <td>{requestItem.prazo ? new Date(requestItem.prazo).toLocaleString("pt-BR") : "-"}</td>
+                                  <td>
+                                    <p>{requestItem.total_documentos}</p>
+                                    {requestItem.documentos.length > 0 ? (
+                                      <p className="subtitle">Ultimo: {requestItem.documentos[0].arquivoNome}</p>
+                                    ) : null}
+                                  </td>
+                                  <td>
+                                    {requestItem.solicitacao_externa ? (
+                                      <>
+                                        <input value={toAbsoluteUrl(requestItem.solicitacao_externa.link_publico)} readOnly />
+                                        <p className="subtitle">
+                                          Expira em {new Date(requestItem.solicitacao_externa.expira_em).toLocaleString("pt-BR")}
+                                        </p>
+                                      </>
+                                    ) : (
+                                      "Sem link ativo"
+                                    )}
+                                  </td>
+                                  <td>
+                                    <button
+                                      type="button"
+                                      className="ghost"
+                                      onClick={() => onGenerateDocumentAiRequestLink(requestItem.id)}
+                                      disabled={isBusyRequest || requestItem.status === "CANCELADA"}
+                                    >
+                                      {isBusyRequest ? "Processando..." : requestItem.solicitacao_externa ? "Gerar novo link" : "Gerar link"}
+                                    </button>
+                                    {requestItem.solicitacao_externa && (
+                                      <button
+                                        type="button"
+                                        className="ghost"
+                                        onClick={() => onCopyDocumentAiRequestLink(requestItem.solicitacao_externa?.link_publico ?? "")}
+                                        disabled={isBusyRequest}
+                                      >
+                                        Copiar link
+                                      </button>
+                                    )}
+                                    {requestItem.solicitacao_externa && (
+                                      <button
+                                        type="button"
+                                        className="danger"
+                                        onClick={() => onDeactivateDocumentAiRequestLink(requestItem.id)}
+                                        disabled={isBusyRequest}
+                                      >
+                                        Desativar link
+                                      </button>
+                                    )}
+                                    {requestItem.status !== "CANCELADA" && requestItem.status !== "ATENDIDA" && (
+                                      <button
+                                        type="button"
+                                        className="ghost danger"
+                                        onClick={() => onCancelDocumentAiRequest(requestItem.id)}
+                                        disabled={isBusyRequest}
+                                      >
+                                        Cancelar
+                                      </button>
+                                    )}
+                                  </td>
+                                </tr>
+                              );
+                            })}
+                          </tbody>
+                        </table>
+                      </div>
+                    )}
+                  </div>
+
+                  <div className="card editor-card">
                     <h3>Carregar Documento para Assinatura</h3>
                     <div className="form-grid">
                       <div className="filters-grid columns-2">
@@ -6936,27 +8496,41 @@ export default function App() {
                 >
                   Tickets
                 </button>
+                <button
+                  type="button"
+                  className={relatorioTab === "transferencias_especiais" ? "tab active" : "tab"}
+                  onClick={() => setRelatorioTab("transferencias_especiais")}
+                >
+                  Transf. Especiais
+                </button>
+                <button
+                  type="button"
+                  className={relatorioTab === "transferencias_discricionarias" ? "tab active" : "tab"}
+                  onClick={() => setRelatorioTab("transferencias_discricionarias")}
+                >
+                  Transf. Discricionarias
+                </button>
               </div>
 
               {relatorioTab === "repasses" ? (
               <>
               <div className="card filters-card">
-                <h3>Relatorio de repasses por convenete</h3>
+                <h3>Relatorio de repasses por proponente</h3>
                 <div className="filters-grid columns-4">
                   <label>
-                    Convenete *
+                    Proponente *
                     <select
-                      value={reportFilters.convenete_id}
+                      value={reportFilters.proponente_id}
                       onChange={(e) =>
                         setReportFilters((prev) => ({
                           ...prev,
-                          convenete_id: e.target.value,
+                          proponente_id: e.target.value,
                           instrumento_id: ""
                         }))
                       }
                     >
                       <option value="">Selecione</option>
-                      {convenetes.map((item) => (
+                      {proponentes.map((item) => (
                         <option key={item.id} value={String(item.id)}>
                           {item.nome} ({item.cnpj})
                         </option>
@@ -7190,19 +8764,19 @@ export default function App() {
                     <h3>Relatorio de acompanhamento de obras</h3>
                     <div className="filters-grid columns-4">
                       <label>
-                        Convenete
+                        Proponente
                         <select
-                          value={obraReportFilters.convenete_id}
+                          value={obraReportFilters.proponente_id}
                           onChange={(e) =>
                             setObraReportFilters((prev) => ({
                               ...prev,
-                              convenete_id: e.target.value,
+                              proponente_id: e.target.value,
                               instrumento_id: ""
                             }))
                           }
                         >
                           <option value="">Todos</option>
-                          {convenetes.map((item) => (
+                          {proponentes.map((item) => (
                             <option key={item.id} value={String(item.id)}>
                               {item.nome}
                             </option>
@@ -7440,6 +9014,1084 @@ export default function App() {
                         </div>
                       </div>
                     </>
+                  )}
+                </>
+              ) : relatorioTab === "transferencias_especiais" ? (
+                <>
+                  <div className="card filters-card">
+                    <h3>Transferencias especiais (Transferegov)</h3>
+                    <div className="filters-grid columns-4">
+                      <label>
+                        CNPJ beneficiario
+                        <input
+                          value={transferenciasEspeciaisFilters.cnpj}
+                          onChange={(e) =>
+                            setTransferenciasEspeciaisFilters((prev) => ({ ...prev, cnpj: e.target.value }))
+                          }
+                          placeholder="Somente numeros"
+                        />
+                      </label>
+                      <label>
+                        Nome beneficiario
+                        <input
+                          value={transferenciasEspeciaisFilters.nome_beneficiario}
+                          onChange={(e) =>
+                            setTransferenciasEspeciaisFilters((prev) => ({ ...prev, nome_beneficiario: e.target.value }))
+                          }
+                          placeholder="Ex.: MUNICIPIO DE..."
+                        />
+                      </label>
+                      <label>
+                        UF
+                        <input
+                          value={transferenciasEspeciaisFilters.uf}
+                          onChange={(e) =>
+                            setTransferenciasEspeciaisFilters((prev) => ({ ...prev, uf: e.target.value.toUpperCase() }))
+                          }
+                          maxLength={2}
+                          placeholder="Ex.: MG"
+                        />
+                      </label>
+                      <label>
+                        Ano
+                        <input
+                          type="number"
+                          min={2019}
+                          max={2100}
+                          value={transferenciasEspeciaisFilters.ano}
+                          onChange={(e) =>
+                            setTransferenciasEspeciaisFilters((prev) => ({ ...prev, ano: e.target.value }))
+                          }
+                          placeholder="Ex.: 2026"
+                        />
+                      </label>
+                      <label>
+                        Situacao
+                        <input
+                          value={transferenciasEspeciaisFilters.situacao}
+                          onChange={(e) =>
+                            setTransferenciasEspeciaisFilters((prev) => ({ ...prev, situacao: e.target.value }))
+                          }
+                          placeholder="Ex.: CIENTE"
+                        />
+                      </label>
+                      <label>
+                        Codigo plano de acao
+                        <input
+                          value={transferenciasEspeciaisFilters.codigo_plano_acao}
+                          onChange={(e) =>
+                            setTransferenciasEspeciaisFilters((prev) => ({ ...prev, codigo_plano_acao: e.target.value }))
+                          }
+                          placeholder="Ex.: 0903-003192"
+                        />
+                      </label>
+                      <label>
+                        Parlamentar
+                        <input
+                          value={transferenciasEspeciaisFilters.parlamentar}
+                          onChange={(e) =>
+                            setTransferenciasEspeciaisFilters((prev) => ({ ...prev, parlamentar: e.target.value }))
+                          }
+                          placeholder="Nome do parlamentar"
+                        />
+                      </label>
+                      <label>
+                        Tamanho da pagina
+                        <select
+                          value={transferenciasEspeciaisFilters.page_size}
+                          onChange={(e) =>
+                            setTransferenciasEspeciaisFilters((prev) => ({ ...prev, page_size: e.target.value }))
+                          }
+                        >
+                          <option value="10">10</option>
+                          <option value="20">20</option>
+                          <option value="50">50</option>
+                          <option value="100">100</option>
+                        </select>
+                      </label>
+                    </div>
+
+                    <div className="action-row">
+                      <button type="button" onClick={() => void onApplyTransferenciasEspeciaisFilters(1)} disabled={isBusy}>
+                        Consultar
+                      </button>
+                      <button type="button" className="secondary" onClick={onClearTransferenciasEspeciaisFilters}>
+                        Limpar filtros
+                      </button>
+                      <button
+                        type="button"
+                        className="secondary"
+                        onClick={() => transferenciasEspeciaisData && exportTransferenciasEspeciaisCsv(transferenciasEspeciaisData)}
+                        disabled={!transferenciasEspeciaisData}
+                      >
+                        Exportar CSV
+                      </button>
+                      <button
+                        type="button"
+                        className="secondary"
+                        onClick={() =>
+                          transferenciasEspeciaisData && exportTransferenciasEspeciaisPdf(transferenciasEspeciaisData, "executivo")
+                        }
+                        disabled={!transferenciasEspeciaisData}
+                      >
+                        PDF Executivo
+                      </button>
+                      <button
+                        type="button"
+                        className="secondary"
+                        onClick={() =>
+                          transferenciasEspeciaisData && exportTransferenciasEspeciaisPdf(transferenciasEspeciaisData, "analitico")
+                        }
+                        disabled={!transferenciasEspeciaisData}
+                      >
+                        PDF Analitico
+                      </button>
+                    </div>
+                  </div>
+
+                  {!transferenciasEspeciaisData ? (
+                    <div className="card table-card">
+                      <p>Preencha os filtros e consulte para visualizar os planos de acao especial.</p>
+                    </div>
+                  ) : (
+                    <>
+                      <div className="report-kpi-grid">
+                        <div className="card kpi-card">
+                          <p className="eyebrow">Total de registros</p>
+                          <h3>{transferenciasEspeciaisData.paginacao.total}</h3>
+                        </div>
+                        <div className="card kpi-card">
+                          <p className="eyebrow">Pagina atual</p>
+                          <h3>
+                            {transferenciasEspeciaisData.paginacao.pagina}/{transferenciasEspeciaisData.paginacao.total_paginas}
+                          </h3>
+                        </div>
+                        <div className="card kpi-card">
+                          <p className="eyebrow">Atualizado em</p>
+                          <h3>{new Date(transferenciasEspeciaisData.cache.atualizado_em).toLocaleString("pt-BR")}</h3>
+                        </div>
+                        <div className="card kpi-card">
+                          <p className="eyebrow">Fonte</p>
+                          <h3>{transferenciasEspeciaisData.cache.em_cache ? "Cache" : "Tempo real"}</h3>
+                        </div>
+                      </div>
+
+                      <div className="card table-card">
+                        <h3>Planos de acao especial</h3>
+                        <div className="table-wrap">
+                          <table>
+                            <thead>
+                              <tr>
+                                <th>ID</th>
+                                <th>Codigo</th>
+                                <th>Ano</th>
+                                <th>Situacao</th>
+                                <th>Beneficiario</th>
+                                <th>UF</th>
+                                <th>CNPJ</th>
+                                <th>Parlamentar</th>
+                                <th>Custeio</th>
+                                <th>Investimento</th>
+                              </tr>
+                            </thead>
+                            <tbody>
+                              {transferenciasEspeciaisData.itens.length === 0 ? (
+                                <tr>
+                                  <td colSpan={10}>Nenhum plano de acao encontrado para os filtros informados.</td>
+                                </tr>
+                              ) : (
+                                transferenciasEspeciaisData.itens.map((item) => (
+                                  <tr key={item.id_plano_acao}>
+                                    <td>{item.id_plano_acao}</td>
+                                    <td>{item.codigo_plano_acao}</td>
+                                    <td>{item.ano_plano_acao}</td>
+                                    <td>{item.situacao_plano_acao}</td>
+                                    <td>{item.nome_beneficiario_plano_acao}</td>
+                                    <td>{item.uf_beneficiario_plano_acao}</td>
+                                    <td>{item.cnpj_beneficiario_plano_acao}</td>
+                                    <td>{item.nome_parlamentar_emenda_plano_acao ?? "-"}</td>
+                                    <td>{formatCurrency(item.valor_custeio_plano_acao)}</td>
+                                    <td>{formatCurrency(item.valor_investimento_plano_acao)}</td>
+                                  </tr>
+                                ))
+                              )}
+                            </tbody>
+                          </table>
+                        </div>
+                      </div>
+
+                      <div className="action-row">
+                        <button
+                          type="button"
+                          className="secondary"
+                          onClick={() => void onApplyTransferenciasEspeciaisFilters(transferenciasEspeciaisPage - 1)}
+                          disabled={isBusy || !transferenciasEspeciaisData.paginacao.tem_anterior}
+                        >
+                          Pagina anterior
+                        </button>
+                        <button
+                          type="button"
+                          className="secondary"
+                          onClick={() => void onApplyTransferenciasEspeciaisFilters(transferenciasEspeciaisPage + 1)}
+                          disabled={isBusy || !transferenciasEspeciaisData.paginacao.tem_proxima}
+                        >
+                          Proxima pagina
+                        </button>
+                      </div>
+                    </>
+                  )}
+                </>
+              ) : relatorioTab === "transferencias_discricionarias" ? (
+                <>
+                  <div className="card filters-card">
+                    <h3>Transferencias discricionarias e legais (Transferegov)</h3>
+                    <div className="tab-row" style={{ marginTop: 12 }}>
+                      <button
+                        type="button"
+                        className={transferenciasDiscricionariasTab === "convenios" ? "tab active" : "tab"}
+                        onClick={() => setTransferenciasDiscricionariasTab("convenios")}
+                      >
+                        Convenios
+                      </button>
+                      <button
+                        type="button"
+                        className={transferenciasDiscricionariasTab === "proponente" ? "tab active" : "tab"}
+                        onClick={() => setTransferenciasDiscricionariasTab("proponente")}
+                      >
+                        Desembolsos por proponente
+                      </button>
+                    </div>
+
+                    {transferenciasDiscricionariasTab === "convenios" && (
+                      <>
+                    <div className="filters-grid columns-4">
+                      <label>
+                        CNPJ proponente
+                        <input
+                          list="td-cnpj-sugestoes"
+                          value={transferenciasDiscricionariasFilters.cnpj}
+                          onChange={(e) => {
+                            const digits = e.target.value.replace(/\D/g, "");
+                            const sugestaoSelecionada = transferenciasDiscricionariasCnpjSugestoes.find(
+                              (item) => item.cnpj === digits
+                            );
+                            setTransferenciasDiscricionariasFilters((prev) => ({
+                              ...prev,
+                              cnpj: formatCnpj(digits),
+                              nome_proponente: sugestaoSelecionada?.nome_proponente ?? prev.nome_proponente
+                            }));
+                          }}
+                          placeholder="00.000.000/0000-00"
+                        />
+                        <datalist id="td-cnpj-sugestoes">
+                          {transferenciasDiscricionariasCnpjSugestoes.map((item) => (
+                            <option key={`${item.cnpj}-${item.nome_proponente}`} value={formatCnpj(item.cnpj)}>
+                              {`${formatCnpj(item.cnpj)} - ${item.nome_proponente}`}
+                            </option>
+                          ))}
+                        </datalist>
+                      </label>
+                      <label>
+                        Nome proponente
+                        <input
+                          value={transferenciasDiscricionariasFilters.nome_proponente}
+                          onChange={(e) =>
+                            setTransferenciasDiscricionariasFilters((prev) => ({ ...prev, nome_proponente: e.target.value }))
+                          }
+                          placeholder="Ex.: PREFEITURA..."
+                        />
+                      </label>
+                      <label>
+                        UF
+                        <select
+                          value={transferenciasDiscricionariasFilters.uf}
+                          onChange={(e) =>
+                            setTransferenciasDiscricionariasFilters((prev) => ({ ...prev, uf: e.target.value }))
+                          }
+                        >
+                          <option value="">Todas</option>
+                          {(transferenciasDiscricionariasFiltros?.ufs ?? []).map((uf) => (
+                            <option key={uf} value={uf}>
+                              {uf}
+                            </option>
+                          ))}
+                        </select>
+                      </label>
+                      <label>
+                        Municipio
+                        <input
+                          value={transferenciasDiscricionariasFilters.municipio}
+                          onChange={(e) =>
+                            setTransferenciasDiscricionariasFilters((prev) => ({ ...prev, municipio: e.target.value }))
+                          }
+                          placeholder="Ex.: SALVADOR"
+                        />
+                      </label>
+                      <label>
+                        Ano
+                        <input
+                          type="number"
+                          min={2000}
+                          max={2100}
+                          value={transferenciasDiscricionariasFilters.ano}
+                          onChange={(e) =>
+                            setTransferenciasDiscricionariasFilters((prev) => ({ ...prev, ano: e.target.value }))
+                          }
+                          placeholder="Ex.: 2025"
+                        />
+                      </label>
+                      <label>
+                        Vigencias a vencer em ate
+                        <select
+                          value={transferenciasDiscricionariasFilters.vigencia_a_vencer_dias}
+                          onChange={(e) =>
+                            setTransferenciasDiscricionariasFilters((prev) => ({
+                              ...prev,
+                              vigencia_a_vencer_dias: e.target.value as "" | "30" | "60" | "90"
+                            }))
+                          }
+                        >
+                          <option value="">Sem filtro</option>
+                          <option value="30">30 dias</option>
+                          <option value="60">60 dias</option>
+                          <option value="90">90 dias</option>
+                        </select>
+                      </label>
+                      <label>
+                        Situacao proposta
+                        <select
+                          value={transferenciasDiscricionariasFilters.situacao_proposta}
+                          onChange={(e) =>
+                            setTransferenciasDiscricionariasFilters((prev) => ({ ...prev, situacao_proposta: e.target.value }))
+                          }
+                        >
+                          <option value="">Todas</option>
+                          {(transferenciasDiscricionariasFiltros?.situacoes_proposta ?? []).map((situacao) => (
+                            <option key={situacao} value={situacao}>
+                              {situacao}
+                            </option>
+                          ))}
+                        </select>
+                      </label>
+                      <label>
+                        Situacao convenio
+                        <select
+                          value={transferenciasDiscricionariasFilters.situacao_convenio}
+                          onChange={(e) =>
+                            setTransferenciasDiscricionariasFilters((prev) => ({ ...prev, situacao_convenio: e.target.value }))
+                          }
+                        >
+                          <option value="">Todas</option>
+                          {(transferenciasDiscricionariasFiltros?.situacoes_convenio ?? []).map((situacao) => (
+                            <option key={situacao} value={situacao}>
+                              {situacao}
+                            </option>
+                          ))}
+                        </select>
+                      </label>
+                      <label>
+                        Tipo ente
+                        <select
+                          value={transferenciasDiscricionariasFilters.tipo_ente}
+                          onChange={(e) =>
+                            setTransferenciasDiscricionariasFilters((prev) => ({
+                              ...prev,
+                              tipo_ente: e.target.value as "" | "estado" | "municipio"
+                            }))
+                          }
+                        >
+                          <option value="">Todos</option>
+                          <option value="estado">Estado</option>
+                          <option value="municipio">Municipio</option>
+                        </select>
+                      </label>
+                      <label>
+                        Nr convenio
+                        <input
+                          value={transferenciasDiscricionariasFilters.nr_convenio}
+                          onChange={(e) =>
+                            setTransferenciasDiscricionariasFilters((prev) => ({ ...prev, nr_convenio: e.target.value }))
+                          }
+                          placeholder="Ex.: 943522"
+                        />
+                      </label>
+                      <label>
+                        Nr proposta
+                        <input
+                          value={transferenciasDiscricionariasFilters.nr_proposta}
+                          onChange={(e) =>
+                            setTransferenciasDiscricionariasFilters((prev) => ({ ...prev, nr_proposta: e.target.value }))
+                          }
+                          placeholder="Ex.: 12345/2025"
+                        />
+                      </label>
+                      <label>
+                        Tamanho da pagina
+                        <select
+                          value={transferenciasDiscricionariasFilters.page_size}
+                          onChange={(e) =>
+                            setTransferenciasDiscricionariasFilters((prev) => ({ ...prev, page_size: e.target.value }))
+                          }
+                        >
+                          <option value="10">10</option>
+                          <option value="20">20</option>
+                          <option value="50">50</option>
+                          <option value="100">100</option>
+                        </select>
+                      </label>
+                    </div>
+
+                    <div className="action-row">
+                      <button
+                        type="button"
+                        onClick={() => void onApplyTransferenciasDiscricionariasFilters(1)}
+                        disabled={isBusy || isSyncingTransferenciasDiscricionarias}
+                      >
+                        Consultar
+                      </button>
+                      <button
+                        type="button"
+                        className="secondary"
+                        onClick={() => void onApplyTransferenciasDiscricionariasVigenciaPreset(30)}
+                        disabled={isBusy || isSyncingTransferenciasDiscricionarias}
+                      >
+                        Vencem em 30 dias
+                      </button>
+                      <button
+                        type="button"
+                        className="secondary"
+                        onClick={() => void onApplyTransferenciasDiscricionariasVigenciaPreset(60)}
+                        disabled={isBusy || isSyncingTransferenciasDiscricionarias}
+                      >
+                        Vencem em 60 dias
+                      </button>
+                      <button
+                        type="button"
+                        className="secondary"
+                        onClick={() => void onApplyTransferenciasDiscricionariasVigenciaPreset(90)}
+                        disabled={isBusy || isSyncingTransferenciasDiscricionarias}
+                      >
+                        Vencem em 90 dias
+                      </button>
+                      <button
+                        type="button"
+                        className="secondary"
+                        onClick={onClearTransferenciasDiscricionariasFilters}
+                        disabled={isSyncingTransferenciasDiscricionarias}
+                      >
+                        Limpar filtros
+                      </button>
+                      <button
+                        type="button"
+                        className="secondary"
+                        onClick={() => void onRefreshTransferenciasDiscricionariasSyncStatus()}
+                        disabled={isSyncingTransferenciasDiscricionarias}
+                      >
+                        {isSyncingTransferenciasDiscricionarias ? "Atualizando status..." : "Atualizar status"}
+                      </button>
+                      {canManageInstruments && (
+                        <button
+                          type="button"
+                          className="secondary"
+                          onClick={() => void onSyncTransferenciasDiscricionarias()}
+                          disabled={isSyncingTransferenciasDiscricionarias}
+                        >
+                          {isSyncingTransferenciasDiscricionarias ? "Sincronizando base..." : "Sincronizar base"}
+                        </button>
+                      )}
+                      <button
+                        type="button"
+                        className="secondary"
+                        onClick={() => void onExportTransferenciasDiscricionariasPdf("analitico")}
+                        disabled={!transferenciasDiscricionariasData || isBusy || isSyncingTransferenciasDiscricionarias}
+                      >
+                        PDF Analitico
+                      </button>
+                    </div>
+
+                    <p className="muted" style={{ marginTop: 6 }}>
+                      Campos detalhados (inicio/fim de vigencia e prestacao de contas) estao disponiveis no PDF Analitico.
+                      Se o campo de convenio ficar vazio, o PDF inclui automaticamente os convenios da consulta atual (limite de 30).
+                      No historico de desembolsos, sao listados somente convenios com mais de uma parcela.
+                    </p>
+
+                    <div className="filters-grid columns-4">
+                      <label>
+                        Convenios para historico de desembolsos (opcional)
+                        <input
+                          value={transferenciasDiscricionariasDesembolsoFilters.nr_convenio}
+                          onChange={(e) =>
+                            setTransferenciasDiscricionariasDesembolsoFilters((prev) => ({
+                              ...prev,
+                              nr_convenio: e.target.value
+                            }))
+                          }
+                          placeholder="Ex.: 943522, 812112"
+                        />
+                      </label>
+                      <label>
+                        Ano desembolso
+                        <input
+                          type="number"
+                          min={2000}
+                          max={2100}
+                          value={transferenciasDiscricionariasDesembolsoFilters.ano}
+                          onChange={(e) =>
+                            setTransferenciasDiscricionariasDesembolsoFilters((prev) => ({
+                              ...prev,
+                              ano: e.target.value
+                            }))
+                          }
+                          placeholder="Todos"
+                        />
+                      </label>
+                      <label>
+                        Mes desembolso
+                        <select
+                          value={transferenciasDiscricionariasDesembolsoFilters.mes}
+                          onChange={(e) =>
+                            setTransferenciasDiscricionariasDesembolsoFilters((prev) => ({
+                              ...prev,
+                              mes: e.target.value
+                            }))
+                          }
+                        >
+                          <option value="">Todos</option>
+                          {Array.from({ length: 12 }, (_, index) => {
+                            const month = index + 1;
+                            return (
+                              <option key={month} value={String(month)}>
+                                {month.toString().padStart(2, "0")}
+                              </option>
+                            );
+                          })}
+                        </select>
+                      </label>
+                      <label>
+                        Tamanho pagina desembolsos
+                        <select
+                          value={transferenciasDiscricionariasDesembolsoFilters.page_size}
+                          onChange={(e) =>
+                            setTransferenciasDiscricionariasDesembolsoFilters((prev) => ({
+                              ...prev,
+                              page_size: e.target.value
+                            }))
+                          }
+                        >
+                          <option value="20">20</option>
+                          <option value="50">50</option>
+                          <option value="100">100</option>
+                          <option value="200">200</option>
+                        </select>
+                      </label>
+                    </div>
+
+                    <div className="action-row">
+                      <button
+                        type="button"
+                        className="secondary"
+                        onClick={() => void onApplyTransferenciasDiscricionariasDesembolsoFilters(1)}
+                        disabled={isLoadingTransferenciasDiscricionariasDesembolsos}
+                      >
+                        {isLoadingTransferenciasDiscricionariasDesembolsos ? "Consultando desembolsos..." : "Consultar desembolsos"}
+                      </button>
+                      <button
+                        type="button"
+                        className="secondary"
+                        onClick={onClearTransferenciasDiscricionariasDesembolsos}
+                        disabled={isLoadingTransferenciasDiscricionariasDesembolsos}
+                      >
+                        Limpar desembolsos
+                      </button>
+                    </div>
+                      </>
+                    )}
+
+                    {transferenciasDiscricionariasTab === "proponente" && (
+                      <>
+                        <div className="filters-grid columns-4">
+                          <label>
+                            CNPJ proponente
+                            <input
+                              value={transferenciasDiscricionariasProponenteDesembolsoFilters.cnpj}
+                              onChange={(e) =>
+                                setTransferenciasDiscricionariasProponenteDesembolsoFilters((prev) => ({
+                                  ...prev,
+                                  cnpj: formatCnpj(e.target.value.replace(/\D/g, ""))
+                                }))
+                              }
+                              placeholder="00.000.000/0000-00"
+                            />
+                          </label>
+                          <label>
+                            Nome proponente
+                            <input
+                              value={transferenciasDiscricionariasProponenteDesembolsoFilters.nome_proponente}
+                              onChange={(e) =>
+                                setTransferenciasDiscricionariasProponenteDesembolsoFilters((prev) => ({
+                                  ...prev,
+                                  nome_proponente: e.target.value
+                                }))
+                              }
+                              placeholder="Ex.: PREFEITURA..."
+                            />
+                          </label>
+                          <label>
+                            Ano desembolso
+                            <input
+                              type="number"
+                              min={2000}
+                              max={2100}
+                              value={transferenciasDiscricionariasProponenteDesembolsoFilters.ano}
+                              onChange={(e) =>
+                                setTransferenciasDiscricionariasProponenteDesembolsoFilters((prev) => ({
+                                  ...prev,
+                                  ano: e.target.value
+                                }))
+                              }
+                              placeholder="Todos"
+                            />
+                          </label>
+                          <label>
+                            Mes desembolso
+                            <select
+                              value={transferenciasDiscricionariasProponenteDesembolsoFilters.mes}
+                              onChange={(e) =>
+                                setTransferenciasDiscricionariasProponenteDesembolsoFilters((prev) => ({
+                                  ...prev,
+                                  mes: e.target.value
+                                }))
+                              }
+                            >
+                              <option value="">Todos</option>
+                              {Array.from({ length: 12 }, (_, index) => {
+                                const month = index + 1;
+                                return (
+                                  <option key={month} value={String(month)}>
+                                    {month.toString().padStart(2, "0")}
+                                  </option>
+                                );
+                              })}
+                            </select>
+                          </label>
+                          <label>
+                            Tamanho da pagina
+                            <select
+                              value={transferenciasDiscricionariasProponenteDesembolsoFilters.page_size}
+                              onChange={(e) =>
+                                setTransferenciasDiscricionariasProponenteDesembolsoFilters((prev) => ({
+                                  ...prev,
+                                  page_size: e.target.value
+                                }))
+                              }
+                            >
+                              <option value="50">50</option>
+                              <option value="100">100</option>
+                              <option value="200">200</option>
+                              <option value="500">500</option>
+                            </select>
+                          </label>
+                        </div>
+
+                        <div className="action-row">
+                          <button
+                            type="button"
+                            onClick={() => void onApplyTransferenciasDiscricionariasProponenteDesembolsoFilters(1)}
+                            disabled={isLoadingTransferenciasDiscricionariasProponenteDesembolsos}
+                          >
+                            {isLoadingTransferenciasDiscricionariasProponenteDesembolsos
+                              ? "Consultando..."
+                              : "Consultar por proponente"}
+                          </button>
+                          <button
+                            type="button"
+                            className="secondary"
+                            onClick={onClearTransferenciasDiscricionariasProponenteDesembolsos}
+                            disabled={isLoadingTransferenciasDiscricionariasProponenteDesembolsos}
+                          >
+                            Limpar filtros
+                          </button>
+                          <button
+                            type="button"
+                            className="secondary"
+                            onClick={() => void onExportTransferenciasDiscricionariasProponenteDesembolsosPdf("executivo")}
+                            disabled={isLoadingTransferenciasDiscricionariasProponenteDesembolsos}
+                          >
+                            PDF Executivo
+                          </button>
+                          <button
+                            type="button"
+                            className="secondary"
+                            onClick={() => void onExportTransferenciasDiscricionariasProponenteDesembolsosPdf("analitico")}
+                            disabled={isLoadingTransferenciasDiscricionariasProponenteDesembolsos}
+                          >
+                            PDF Analitico
+                          </button>
+                        </div>
+                      </>
+                    )}
+                  </div>
+
+                  {transferenciasDiscricionariasTab === "convenios" && (!transferenciasDiscricionariasData ? (
+                    <>
+                      <div className="card table-card">
+                        <p>Preencha os filtros e consulte para visualizar transferencias discricionarias e legais.</p>
+                      </div>
+                      {transferenciasDiscricionariasSyncInfo && (
+                        <div className="card table-card">
+                          <p>
+                            Ultima carga: {transferenciasDiscricionariasSyncInfo.data_carga_fonte ?? "Nao informada"} | Status: {" "}
+                            {transferenciasDiscricionariasSyncInfo.status} | Registros: {" "}
+                            {transferenciasDiscricionariasSyncInfo.total_registros.toLocaleString("pt-BR")}
+                          </p>
+                        </div>
+                      )}
+                    </>
+                  ) : (
+                    <>
+                      <div className="report-kpi-grid">
+                        <div className="card kpi-card">
+                          <p className="eyebrow">Total de registros</p>
+                          <h3>{transferenciasDiscricionariasData.paginacao.total}</h3>
+                        </div>
+                        <div className="card kpi-card">
+                          <p className="eyebrow">Pagina atual</p>
+                          <h3>
+                            {transferenciasDiscricionariasData.paginacao.pagina}/
+                            {transferenciasDiscricionariasData.paginacao.total_paginas}
+                          </h3>
+                        </div>
+                        <div className="card kpi-card">
+                          <p className="eyebrow">Data da carga oficial</p>
+                          <h3>{transferenciasDiscricionariasSyncInfo?.data_carga_fonte ?? "Nao informada"}</h3>
+                        </div>
+                        <div className="card kpi-card">
+                          <p className="eyebrow">Status da sincronizacao</p>
+                          <h3>{transferenciasDiscricionariasSyncInfo?.status ?? "desconhecido"}</h3>
+                        </div>
+                      </div>
+
+                      {transferenciasDiscricionariasSyncInfo?.detalhe && (
+                        <div className="card table-card">
+                          <p>{transferenciasDiscricionariasSyncInfo.detalhe}</p>
+                        </div>
+                      )}
+
+                      <div className="card table-card">
+                        <h3>Propostas e convenios (discricionarias/legais)</h3>
+                        <div className="table-wrap">
+                          <table>
+                            <thead>
+                              <tr>
+                                <th>Nr proposta</th>
+                                <th>Nr convenio</th>
+                                <th>UF</th>
+                                <th>Proponente</th>
+                                <th>Objeto</th>
+                                <th>Situacao proposta</th>
+                                <th>Situacao convenio</th>
+                                <th>Ano</th>
+                                <th>Fim vigencia</th>
+                                <th>Dias p/ vencer</th>
+                                <th>Contrapartida financeira</th>
+                                <th>Valor global</th>
+                                <th>Desembolsado</th>
+                                <th>Acoes</th>
+                              </tr>
+                            </thead>
+                            <tbody>
+                                {transferenciasDiscricionariasData.itens.length === 0 ? (
+                                  <tr>
+                                    <td colSpan={14}>Nenhum registro encontrado para os filtros informados.</td>
+                                  </tr>
+                                ) : (
+                                transferenciasDiscricionariasData.itens.map((item) => (
+                                  <tr key={item.id}>
+                                    <td>{item.nr_proposta ?? "-"}</td>
+                                    <td>{item.nr_convenio ?? "-"}</td>
+                                    <td>{item.uf ?? "-"}</td>
+                                    <td>{item.nome_proponente ?? "-"}</td>
+                                    <td>{normalizeReadableText(item.objeto) ?? "-"}</td>
+                                    <td>{item.situacao_proposta ?? "-"}</td>
+                                    <td>{item.situacao_convenio ?? "-"}</td>
+                                    <td>{item.ano_referencia ?? "-"}</td>
+                                    <td>{item.dia_fim_vigencia ?? "-"}</td>
+                                    <td>{item.dias_para_vencimento == null ? "-" : `${item.dias_para_vencimento} dias`}</td>
+                                    <td>
+                                      {item.valor_contrapartida_financeira === null
+                                        ? "-"
+                                        : formatCurrency(item.valor_contrapartida_financeira)}
+                                    </td>
+                                    <td>{item.valor_global_conv === null ? "-" : formatCurrency(item.valor_global_conv)}</td>
+                                    <td>
+                                      {item.valor_desembolsado_conv === null
+                                        ? "-"
+                                        : formatCurrency(item.valor_desembolsado_conv)}
+                                    </td>
+                                    <td>
+                                      <button
+                                        type="button"
+                                        className="secondary"
+                                        onClick={() => item.nr_convenio && void onOpenTransferenciasDiscricionariasDesembolsos(item.nr_convenio)}
+                                        disabled={!item.nr_convenio || isLoadingTransferenciasDiscricionariasDesembolsos}
+                                      >
+                                        Ver desembolsos
+                                      </button>
+                                    </td>
+                                  </tr>
+                                ))
+                              )}
+                            </tbody>
+                          </table>
+                        </div>
+                      </div>
+
+                      {transferenciasDiscricionariasDesembolsoData && (
+                        <>
+                          <div className="report-kpi-grid">
+                            <div className="card kpi-card">
+                              <p className="eyebrow">Convenio selecionado</p>
+                              <h3>{transferenciasDiscricionariasDesembolsoData.resumo.nr_convenio}</h3>
+                            </div>
+                            <div className="card kpi-card">
+                              <p className="eyebrow">Total de desembolsos</p>
+                              <h3>{transferenciasDiscricionariasDesembolsoData.resumo.total_desembolsos}</h3>
+                            </div>
+                            <div className="card kpi-card">
+                              <p className="eyebrow">Valor total desembolsado</p>
+                              <h3>{formatCurrency(transferenciasDiscricionariasDesembolsoData.resumo.valor_total_desembolsado)}</h3>
+                            </div>
+                            <div className="card kpi-card">
+                              <p className="eyebrow">Pagina atual</p>
+                              <h3>
+                                {transferenciasDiscricionariasDesembolsoData.paginacao.pagina}/
+                                {transferenciasDiscricionariasDesembolsoData.paginacao.total_paginas}
+                              </h3>
+                            </div>
+                          </div>
+
+                          <div className="card table-card">
+                            <h3>Historico de desembolsos do convenio</h3>
+                            <div className="table-wrap">
+                              <table>
+                                <thead>
+                                  <tr>
+                                    <th>ID desembolso</th>
+                                    <th>Data desembolso</th>
+                                    <th>Ult. desembolso</th>
+                                    <th>Ano</th>
+                                    <th>Mes</th>
+                                    <th>Dias sem desembolso</th>
+                                    <th>Nr SIAFI</th>
+                                    <th>UG emitente</th>
+                                    <th>Valor desembolsado</th>
+                                    <th>Observacao</th>
+                                  </tr>
+                                </thead>
+                                <tbody>
+                                  {transferenciasDiscricionariasDesembolsoData.itens.length === 0 ? (
+                                    <tr>
+                                      <td colSpan={10}>Nenhum desembolso encontrado para os filtros informados.</td>
+                                    </tr>
+                                  ) : (
+                                    transferenciasDiscricionariasDesembolsoData.itens.map((item) => (
+                                      <tr key={item.id}>
+                                        <td>{item.id_desembolso ?? "-"}</td>
+                                        <td>{item.data_desembolso ? formatDateOnlyPtBr(item.data_desembolso) : "-"}</td>
+                                        <td>{item.dt_ult_desembolso ? formatDateOnlyPtBr(item.dt_ult_desembolso) : "-"}</td>
+                                        <td>{item.ano_desembolso ?? "-"}</td>
+                                        <td>{item.mes_desembolso ?? "-"}</td>
+                                        <td>{item.qtd_dias_sem_desembolso ?? "-"}</td>
+                                        <td>{item.nr_siafi ?? "-"}</td>
+                                        <td>{item.ug_emitente_dh ?? "-"}</td>
+                                        <td>{item.vl_desembolsado === null ? "-" : formatCurrency(item.vl_desembolsado)}</td>
+                                        <td>{item.observacao_dh ?? "-"}</td>
+                                      </tr>
+                                    ))
+                                  )}
+                                </tbody>
+                              </table>
+                            </div>
+                          </div>
+
+                          <div className="action-row">
+                            <button
+                              type="button"
+                              className="secondary"
+                              onClick={() =>
+                                void onApplyTransferenciasDiscricionariasDesembolsoFilters(
+                                  transferenciasDiscricionariasDesembolsoPage - 1
+                                )
+                              }
+                              disabled={
+                                isLoadingTransferenciasDiscricionariasDesembolsos ||
+                                !transferenciasDiscricionariasDesembolsoData.paginacao.tem_anterior
+                              }
+                            >
+                              Pagina anterior (desembolsos)
+                            </button>
+                            <button
+                              type="button"
+                              className="secondary"
+                              onClick={() =>
+                                void onApplyTransferenciasDiscricionariasDesembolsoFilters(
+                                  transferenciasDiscricionariasDesembolsoPage + 1
+                                )
+                              }
+                              disabled={
+                                isLoadingTransferenciasDiscricionariasDesembolsos ||
+                                !transferenciasDiscricionariasDesembolsoData.paginacao.tem_proxima
+                              }
+                            >
+                              Proxima pagina (desembolsos)
+                            </button>
+                          </div>
+                        </>
+                      )}
+
+                      <div className="action-row">
+                        <button
+                          type="button"
+                          className="secondary"
+                          onClick={() => void onApplyTransferenciasDiscricionariasFilters(transferenciasDiscricionariasPage - 1)}
+                          disabled={isBusy || !transferenciasDiscricionariasData.paginacao.tem_anterior}
+                        >
+                          Pagina anterior
+                        </button>
+                        <button
+                          type="button"
+                          className="secondary"
+                          onClick={() => void onApplyTransferenciasDiscricionariasFilters(transferenciasDiscricionariasPage + 1)}
+                          disabled={isBusy || !transferenciasDiscricionariasData.paginacao.tem_proxima}
+                        >
+                          Proxima pagina
+                        </button>
+                      </div>
+                    </>
+                  ))}
+
+                  {transferenciasDiscricionariasTab === "proponente" && (
+                    !transferenciasDiscricionariasProponenteDesembolsoData ? (
+                      <div className="card table-card">
+                        <p>Informe CNPJ ou nome do proponente para consultar desembolsos e exportar PDF.</p>
+                      </div>
+                    ) : (
+                      <>
+                        <div className="report-kpi-grid">
+                          <div className="card kpi-card">
+                            <p className="eyebrow">Proponente</p>
+                            <h3>{transferenciasDiscricionariasProponenteDesembolsoData.resumo.nome_proponente ?? "Nao informado"}</h3>
+                          </div>
+                          <div className="card kpi-card">
+                            <p className="eyebrow">CNPJ</p>
+                            <h3>
+                              {transferenciasDiscricionariasProponenteDesembolsoData.resumo.cnpj
+                                ? formatCnpj(transferenciasDiscricionariasProponenteDesembolsoData.resumo.cnpj)
+                                : "Nao informado"}
+                            </h3>
+                          </div>
+                          <div className="card kpi-card">
+                            <p className="eyebrow">Total de desembolsos</p>
+                            <h3>{transferenciasDiscricionariasProponenteDesembolsoData.resumo.total_desembolsos}</h3>
+                          </div>
+                          <div className="card kpi-card">
+                            <p className="eyebrow">Valor total desembolsado</p>
+                            <h3>
+                              {formatCurrency(
+                                transferenciasDiscricionariasProponenteDesembolsoData.resumo.valor_total_desembolsado
+                              )}
+                            </h3>
+                          </div>
+                        </div>
+
+                        <div className="card table-card">
+                          <h3>Desembolsos por proponente</h3>
+                          <div className="table-wrap">
+                            <table>
+                              <thead>
+                                <tr>
+                                  <th>Parcela</th>
+                                  <th>ID desembolso</th>
+                                  <th>Convenio</th>
+                                  <th>Objeto</th>
+                                  <th>Contrapartida</th>
+                                  <th>UF</th>
+                                  <th>Municipio</th>
+                                  <th>Data</th>
+                                  <th>Ano</th>
+                                  <th>Mes</th>
+                                  <th>SIAFI</th>
+                                  <th>UG emitente</th>
+                                  <th>Valor</th>
+                                </tr>
+                              </thead>
+                              <tbody>
+                                {transferenciasDiscricionariasProponenteDesembolsoData.itens.length === 0 ? (
+                                  <tr>
+                                    <td colSpan={13}>Nenhum desembolso encontrado para o proponente informado.</td>
+                                  </tr>
+                                ) : (
+                                  transferenciasDiscricionariasProponenteDesembolsoData.itens.map((item) => (
+                                    <tr key={item.id}>
+                                      <td>{transferenciasDiscricionariasProponenteParcelaMap.get(item.id) ?? "-"}a parcela</td>
+                                      <td>{item.id_desembolso ?? "-"}</td>
+                                      <td>{item.nr_convenio ?? "-"}</td>
+                                      <td>{normalizeReadableText(item.objeto) ?? "-"}</td>
+                                      <td>
+                                        {item.valor_contrapartida_financeira === null
+                                          ? "-"
+                                          : formatCurrency(item.valor_contrapartida_financeira)}
+                                      </td>
+                                      <td>{item.uf ?? "-"}</td>
+                                      <td>{item.municipio ?? "-"}</td>
+                                      <td>{item.data_desembolso ? formatDateOnlyPtBr(item.data_desembolso) : "-"}</td>
+                                      <td>{item.ano_desembolso ?? "-"}</td>
+                                      <td>{item.mes_desembolso ?? "-"}</td>
+                                      <td>{item.nr_siafi ?? "-"}</td>
+                                      <td>{item.ug_emitente_dh ?? "-"}</td>
+                                      <td>{item.vl_desembolsado === null ? "-" : formatCurrency(item.vl_desembolsado)}</td>
+                                    </tr>
+                                  ))
+                                )}
+                              </tbody>
+                            </table>
+                          </div>
+                        </div>
+
+                        <div className="action-row">
+                          <button
+                            type="button"
+                            className="secondary"
+                            onClick={() =>
+                              void onApplyTransferenciasDiscricionariasProponenteDesembolsoFilters(
+                                transferenciasDiscricionariasProponenteDesembolsoPage - 1
+                              )
+                            }
+                            disabled={
+                              isLoadingTransferenciasDiscricionariasProponenteDesembolsos ||
+                              !transferenciasDiscricionariasProponenteDesembolsoData.paginacao.tem_anterior
+                            }
+                          >
+                            Pagina anterior
+                          </button>
+                          <button
+                            type="button"
+                            className="secondary"
+                            onClick={() =>
+                              void onApplyTransferenciasDiscricionariasProponenteDesembolsoFilters(
+                                transferenciasDiscricionariasProponenteDesembolsoPage + 1
+                              )
+                            }
+                            disabled={
+                              isLoadingTransferenciasDiscricionariasProponenteDesembolsos ||
+                              !transferenciasDiscricionariasProponenteDesembolsoData.paginacao.tem_proxima
+                            }
+                          >
+                            Proxima pagina
+                          </button>
+                        </div>
+                      </>
+                    )
                   )}
                 </>
               ) : (

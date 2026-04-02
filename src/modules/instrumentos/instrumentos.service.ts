@@ -347,6 +347,88 @@ const ensureWorkflowChecklist = async (instrumentId: number) => {
   });
 };
 
+const parseTransferenciaDateToIso = (value: string | null) => {
+  if (!value) {
+    return null;
+  }
+  const trimmed = value.trim();
+  if (trimmed === "") {
+    return null;
+  }
+
+  const brMatch = /^(\d{2})\/(\d{2})\/(\d{4})$/.exec(trimmed);
+  if (brMatch) {
+    return `${brMatch[3]}-${brMatch[2]}-${brMatch[1]}`;
+  }
+
+  const isoMatch = /^(\d{4})-(\d{2})-(\d{2})$/.exec(trimmed);
+  if (isoMatch) {
+    return trimmed;
+  }
+
+  const parsed = new Date(trimmed);
+  if (Number.isNaN(parsed.getTime())) {
+    return null;
+  }
+  return parsed.toISOString().slice(0, 10);
+};
+
+const normalizeConvenioCode = (value: string) => {
+  const normalized = value.replace(/[./\-\s]/g, "").trim();
+  return normalized === "" ? null : normalized;
+};
+
+const repasseKey = (dataRepasseIso: string, valorRepasse: number) => `${dataRepasseIso}|${valorRepasse.toFixed(2)}`;
+
+type TransferenciaDesembolsoRepasseRow = {
+  id: number | bigint | string;
+  data_desembolso: string | null;
+  vl_desembolsado: number | string | null;
+};
+
+const isMissingTransferenciasDesembolsoTableError = (error: unknown) => {
+  if (!(error instanceof Prisma.PrismaClientKnownRequestError) || error.code !== "P2010") {
+    return false;
+  }
+
+  const metaMessage =
+    typeof error.meta === "object" && error.meta && "message" in error.meta
+      ? String((error.meta as { message?: unknown }).message ?? "")
+      : "";
+
+  const details = `${error.message} ${metaMessage}`.toLowerCase();
+  const isMissingTable =
+    details.includes("no such table") ||
+    details.includes("does not exist") ||
+    details.includes("relation") ||
+    details.includes("42p01");
+
+  return isMissingTable && details.includes("transferencias_discricionarias_desembolsos");
+};
+
+const isMissingTransferenciasDesembolsoNormColumnError = (error: unknown) => {
+  if (!(error instanceof Prisma.PrismaClientKnownRequestError) || error.code !== "P2010") {
+    return false;
+  }
+
+  const metaMessage =
+    typeof error.meta === "object" && error.meta && "message" in error.meta
+      ? String((error.meta as { message?: unknown }).message ?? "")
+      : "";
+
+  const details = `${error.message} ${metaMessage}`.toLowerCase();
+  return details.includes("no such column") && details.includes("nr_convenio_norm");
+};
+
+export const ensureInstrumentSupportData = async (instrumentId: number) => {
+  await ensureWorkflowChecklist(instrumentId);
+  await prisma.instrumentWorkProgress.upsert({
+    where: { instrumentId },
+    update: {},
+    create: { instrumentId, percentualObra: 0 }
+  });
+};
+
 export const syncAllExistingWorkflowChecklists = async () => {
   const instruments = await prisma.instrumentProposal.findMany({
     select: { id: true }
@@ -400,6 +482,9 @@ export const createInstrument = async (input: CreateInstrumentInput) => {
         status: input.status,
         responsavel: input.responsavel,
         orgaoExecutor: input.orgao_executor,
+        empresaVencedora: input.empresa_vencedora,
+        cnpjVencedora: input.cnpj_vencedora,
+        valorVencedor: input.valor_vencedor,
         observacoes: input.observacoes
       }
     });
@@ -441,6 +526,26 @@ export const listInstruments = async (query: ListQueryInput) => {
     };
   }
 
+  if (query.sync_repasses_desembolsos) {
+    try {
+      const ids = await prisma.instrumentProposal.findMany({
+        where,
+        select: { id: true },
+        orderBy: [{ vigenciaFim: "asc" }, { createdAt: "desc" }]
+      });
+
+      for (const item of ids) {
+        try {
+          await syncInstrumentRepassesFromDesembolsos(item.id);
+        } catch {
+          // Nao bloqueia a listagem caso algum instrumento falhe na sincronizacao.
+        }
+      }
+    } catch {
+      // Nao bloqueia a listagem caso a etapa de sincronizacao em lote falhe.
+    }
+  }
+
   return prisma.instrumentProposal.findMany({
     where,
     include: instrumentRepasseInclude,
@@ -474,6 +579,9 @@ export const updateInstrument = async (id: number, input: UpdateInstrumentInput)
     status: input.status,
     responsavel: input.responsavel,
     orgaoExecutor: input.orgao_executor,
+    empresaVencedora: input.empresa_vencedora,
+    cnpjVencedora: input.cnpj_vencedora,
+    valorVencedor: input.valor_vencedor,
     observacoes: input.observacoes,
     ativo: input.ativo
   };
@@ -497,6 +605,132 @@ export const listRepasses = async (instrumentId: number) => {
   return prisma.instrumentRepasse.findMany({
     where: { instrumentId },
     orderBy: [{ dataRepasse: "desc" }, { id: "desc" }]
+  });
+};
+
+export const syncInstrumentRepassesFromDesembolsos = async (instrumentId: number) => {
+  const instrument = await prisma.instrumentProposal.findUnique({
+    where: { id: instrumentId },
+    select: { instrumento: true }
+  });
+
+  if (!instrument) {
+    return {
+      criados: 0,
+      removidos: 0,
+      total_desembolsos_validos: 0
+    };
+  }
+
+  const convenioCode = instrument.instrumento.trim();
+  const convenioCodeNormalized = normalizeConvenioCode(convenioCode);
+  if (!convenioCodeNormalized) {
+    return {
+      criados: 0,
+      removidos: 0,
+      total_desembolsos_validos: 0
+    };
+  }
+
+  let desembolsos: TransferenciaDesembolsoRepasseRow[] = [];
+  try {
+    desembolsos = await prisma.$queryRaw<TransferenciaDesembolsoRepasseRow[]>(Prisma.sql`
+      SELECT id, data_desembolso, vl_desembolsado
+      FROM transferencias_discricionarias_desembolsos
+      WHERE nr_convenio_norm = ${convenioCodeNormalized}
+      ORDER BY id DESC
+    `);
+  } catch (error) {
+    if (isMissingTransferenciasDesembolsoNormColumnError(error)) {
+      desembolsos = await prisma.$queryRaw<TransferenciaDesembolsoRepasseRow[]>(Prisma.sql`
+        SELECT id, data_desembolso, vl_desembolsado
+        FROM transferencias_discricionarias_desembolsos
+        WHERE REPLACE(REPLACE(REPLACE(REPLACE(nr_convenio, '.', ''), '/', ''), '-', ''), ' ', '')
+          = ${convenioCodeNormalized}
+        ORDER BY id DESC
+      `);
+    } else if (!isMissingTransferenciasDesembolsoTableError(error)) {
+      throw error;
+    }
+  }
+
+  const desiredCounts = new Map<string, number>();
+  for (const row of desembolsos) {
+    const dateIso = parseTransferenciaDateToIso(row.data_desembolso);
+    const value = Number(row.vl_desembolsado ?? 0);
+    if (!dateIso || !Number.isFinite(value) || value <= 0) {
+      continue;
+    }
+
+    const key = repasseKey(dateIso, value);
+    desiredCounts.set(key, (desiredCounts.get(key) ?? 0) + 1);
+  }
+
+  return prisma.$transaction(async (tx) => {
+    const existing = await tx.instrumentRepasse.findMany({
+      where: { instrumentId },
+      orderBy: [{ dataRepasse: "desc" }, { id: "desc" }]
+    });
+
+    const existingMap = new Map<string, Array<{ id: number }>>();
+    for (const repasse of existing) {
+      const key = repasseKey(repasse.dataRepasse.toISOString().slice(0, 10), Number(repasse.valorRepasse));
+      const bucket = existingMap.get(key) ?? [];
+      bucket.push({ id: repasse.id });
+      existingMap.set(key, bucket);
+    }
+
+    const toCreate: Array<{ dataRepasse: Date; valorRepasse: number }> = [];
+    const toDeleteIds: number[] = [];
+
+    for (const [key, desiredCount] of desiredCounts.entries()) {
+      const current = existingMap.get(key) ?? [];
+      if (current.length < desiredCount) {
+        const [dateIso, valueRaw] = key.split("|");
+        const value = Number(valueRaw);
+        const missing = desiredCount - current.length;
+        for (let i = 0; i < missing; i += 1) {
+          toCreate.push({ dataRepasse: new Date(`${dateIso}T00:00:00.000Z`), valorRepasse: value });
+        }
+      } else if (current.length > desiredCount) {
+        const extra = current.slice(desiredCount);
+        toDeleteIds.push(...extra.map((item) => item.id));
+      }
+    }
+
+    for (const [key, current] of existingMap.entries()) {
+      if (desiredCounts.has(key)) {
+        continue;
+      }
+      toDeleteIds.push(...current.map((item) => item.id));
+    }
+
+    if (toDeleteIds.length > 0) {
+      await tx.instrumentRepasse.deleteMany({
+        where: {
+          instrumentId,
+          id: { in: toDeleteIds }
+        }
+      });
+    }
+
+    if (toCreate.length > 0) {
+      await tx.instrumentRepasse.createMany({
+        data: toCreate.map((item) => ({
+          instrumentId,
+          dataRepasse: item.dataRepasse,
+          valorRepasse: item.valorRepasse
+        }))
+      });
+    }
+
+    await recalculateInstrumentRepassado(tx, instrumentId);
+
+    return {
+      criados: toCreate.length,
+      removidos: toDeleteIds.length,
+      total_desembolsos_validos: Array.from(desiredCounts.values()).reduce((acc, value) => acc + value, 0)
+    };
   });
 };
 

@@ -8,8 +8,13 @@ import type {
   ChecklistItemStatus,
   ChecklistResponse,
   Convenete,
+  ConveneteProponenteSugestaoItem,
   ConvenetePayload,
+  ProponenteImportacaoResumo,
   DocumentQaResponse,
+  DocumentAiRequestItem,
+  DocumentAiRequestPriority,
+  DocumentAiRequestStatus,
   DocumentSearchResponse,
   DeadlineAlertResponse,
   InstrumentFilters,
@@ -20,6 +25,14 @@ import type {
   ManagedUser,
   HealthResponse,
   ObraReportResponse,
+  TransferenciaDiscricionariaFiltrosResponse,
+  TransferenciaDiscricionariaDesembolsoResponse,
+  TransferenciaDiscricionariaDesembolsoProponenteResponse,
+  TransferenciaDiscricionariaProponenteSugestaoResponse,
+  TransferenciaDiscricionariaResponse,
+  TransferenciaDiscricionariaSyncResult,
+  TransferenciaDiscricionariaSyncState,
+  TransferenciaEspecialPlanoAcaoResponse,
   Role,
   Ticket,
   TicketPriority,
@@ -175,7 +188,9 @@ export const listInstruments = (
       ativo: filters.ativo,
       status: filters.status,
       concedente: filters.concedente,
-      convenete_id: filters.convenete_id,
+      convenete_id: filters.convenete_id ?? filters.proponente_id,
+      proponente_id: filters.proponente_id,
+      sync_repasses_desembolsos: filters.sync_repasses_desembolsos ?? "false",
       vigencia_de: filters.vigencia_de,
       vigencia_ate: filters.vigencia_ate
     }
@@ -574,14 +589,40 @@ export const listAuditLogs = (
   );
 
 export const listConvenetes = (token: string) =>
-  request<Convenete[]>("/api/v1/convenetes", {
+  request<Convenete[]>("/api/v1/proponentes", {
     headers: {
       Authorization: `Bearer ${token}`
     }
   });
 
+export const searchConveneteProponentes = (token: string, query: { q: string; limit?: number }) =>
+  request<{ itens: ConveneteProponenteSugestaoItem[] }>(
+    "/api/v1/proponentes/sugestoes",
+    {
+      headers: {
+        Authorization: `Bearer ${token}`
+      }
+    },
+    {
+      q: query.q,
+      limit: String(query.limit ?? 10)
+    }
+  );
+
+export const createConveneteFromProponente = (
+  token: string,
+  payload: { cnpj: string; nome_proponente: string; uf?: string; cidade?: string }
+) =>
+  request<Convenete & { importacao?: ProponenteImportacaoResumo }>("/api/v1/proponentes/from-base", {
+    method: "POST",
+    headers: {
+      Authorization: `Bearer ${token}`
+    },
+    body: JSON.stringify(payload)
+  });
+
 export const createConvenete = (token: string, payload: ConvenetePayload) =>
-  request<Convenete>("/api/v1/convenetes", {
+  request<Convenete>("/api/v1/proponentes", {
     method: "POST",
     headers: {
       Authorization: `Bearer ${token}`
@@ -590,7 +631,7 @@ export const createConvenete = (token: string, payload: ConvenetePayload) =>
   });
 
 export const updateConvenete = (token: string, id: number, payload: Partial<ConvenetePayload>) =>
-  request<Convenete>(`/api/v1/convenetes/${id}`, {
+  request<Convenete>(`/api/v1/proponentes/${id}`, {
     method: "PUT",
     headers: {
       Authorization: `Bearer ${token}`
@@ -599,8 +640,34 @@ export const updateConvenete = (token: string, id: number, payload: Partial<Conv
   });
 
 export const deleteConvenete = (token: string, id: number) =>
-  request<void>(`/api/v1/convenetes/${id}`, {
+  request<void>(`/api/v1/proponentes/${id}`, {
     method: "DELETE",
+    headers: {
+      Authorization: `Bearer ${token}`
+    }
+  });
+
+export const reimportarInstrumentosProponente = (token: string, id: number) =>
+  request<{ proponente_id: number; importacao: ProponenteImportacaoResumo }>(
+    `/api/v1/proponentes/${id}/reimportar-instrumentos`,
+    {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${token}`
+      }
+    }
+  );
+
+export const reimportarInstrumentosTodosProponentes = (token: string) =>
+  request<{
+    total_proponentes: number;
+    criados: number;
+    atualizados: number;
+    ignorados: number;
+    erros: number;
+    itens: Array<{ proponente_id: number; nome: string; importacao: ProponenteImportacaoResumo }>;
+  }>("/api/v1/proponentes/reimportar-instrumentos-todos", {
+    method: "POST",
     headers: {
       Authorization: `Bearer ${token}`
     }
@@ -608,7 +675,7 @@ export const deleteConvenete = (token: string, id: number) =>
 
 export const getRepasseReport = (
   token: string,
-  query: { convenete_id: number; instrumento_id?: number; data_de?: string; data_ate?: string }
+  query: { proponente_id?: number; convenete_id?: number; instrumento_id?: number; data_de?: string; data_ate?: string }
 ) =>
   request<RepasseReportResponse>(
     "/api/v1/relatorios/repasses",
@@ -618,7 +685,8 @@ export const getRepasseReport = (
       }
     },
     {
-      convenete_id: String(query.convenete_id),
+      convenete_id: String(query.convenete_id ?? query.proponente_id ?? ""),
+      proponente_id: String(query.proponente_id ?? query.convenete_id ?? ""),
       instrumento_id: query.instrumento_id ? String(query.instrumento_id) : "",
       data_de: query.data_de ?? "",
       data_ate: query.data_ate ?? ""
@@ -628,6 +696,7 @@ export const getRepasseReport = (
 export const getObraReport = (
   token: string,
   query: {
+    proponente_id?: number;
     convenete_id?: number;
     instrumento_id?: number;
     status?: InstrumentStatus;
@@ -644,7 +713,8 @@ export const getObraReport = (
       }
     },
     {
-      convenete_id: query.convenete_id ? String(query.convenete_id) : "",
+      convenete_id: query.convenete_id ? String(query.convenete_id) : query.proponente_id ? String(query.proponente_id) : "",
+      proponente_id: query.proponente_id ? String(query.proponente_id) : query.convenete_id ? String(query.convenete_id) : "",
       instrumento_id: query.instrumento_id ? String(query.instrumento_id) : "",
       status: query.status ?? "",
       ativo: query.ativo === undefined ? "true" : String(query.ativo),
@@ -652,6 +722,176 @@ export const getObraReport = (
       data_ate: query.data_ate ?? ""
     }
   );
+
+export const getTransferenciasEspeciaisPlanoAcao = (
+  token: string,
+  query: {
+    cnpj?: string;
+    nome_beneficiario?: string;
+    uf?: string;
+    ano?: number;
+    situacao?: string;
+    codigo_plano_acao?: string;
+    parlamentar?: string;
+    page?: number;
+    page_size?: number;
+  }
+) =>
+  request<TransferenciaEspecialPlanoAcaoResponse>(
+    "/api/v1/transferencias-especiais/plano-acao",
+    {
+      headers: {
+        Authorization: `Bearer ${token}`
+      }
+    },
+    {
+      cnpj: query.cnpj ?? "",
+      nome_beneficiario: query.nome_beneficiario ?? "",
+      uf: query.uf ?? "",
+      ano: query.ano ? String(query.ano) : "",
+      situacao: query.situacao ?? "",
+      codigo_plano_acao: query.codigo_plano_acao ?? "",
+      parlamentar: query.parlamentar ?? "",
+      page: String(query.page ?? 1),
+      page_size: String(query.page_size ?? 20)
+    }
+  );
+
+export const getTransferenciasDiscricionarias = (
+  token: string,
+  query: {
+    cnpj?: string;
+    nome_proponente?: string;
+    uf?: string;
+    municipio?: string;
+    ano?: number;
+    situacao_proposta?: string;
+    situacao_convenio?: string;
+    nr_convenio?: string;
+    nr_proposta?: string;
+    tipo_ente?: "estado" | "municipio";
+    vigencia_a_vencer_dias?: 30 | 60 | 90;
+    page?: number;
+    page_size?: number;
+  }
+) =>
+  request<TransferenciaDiscricionariaResponse>(
+    "/api/v1/transferencias-discricionarias/propostas",
+    {
+      headers: {
+        Authorization: `Bearer ${token}`
+      }
+    },
+    {
+      cnpj: query.cnpj ?? "",
+      nome_proponente: query.nome_proponente ?? "",
+      uf: query.uf ?? "",
+      municipio: query.municipio ?? "",
+      ano: query.ano ? String(query.ano) : "",
+      situacao_proposta: query.situacao_proposta ?? "",
+      situacao_convenio: query.situacao_convenio ?? "",
+      nr_convenio: query.nr_convenio ?? "",
+      nr_proposta: query.nr_proposta ?? "",
+      tipo_ente: query.tipo_ente ?? "",
+      vigencia_a_vencer_dias: query.vigencia_a_vencer_dias ? String(query.vigencia_a_vencer_dias) : "",
+      page: String(query.page ?? 1),
+      page_size: String(query.page_size ?? 20)
+    }
+  );
+
+export const getTransferenciasDiscricionariasDesembolsos = (
+  token: string,
+  query: {
+    nr_convenio: string;
+    ano?: number;
+    mes?: number;
+    page?: number;
+    page_size?: number;
+  }
+) =>
+  request<TransferenciaDiscricionariaDesembolsoResponse>(
+    "/api/v1/transferencias-discricionarias/desembolsos",
+    {
+      headers: {
+        Authorization: `Bearer ${token}`
+      }
+    },
+    {
+      nr_convenio: query.nr_convenio,
+      ano: query.ano ? String(query.ano) : "",
+      mes: query.mes ? String(query.mes) : "",
+      page: String(query.page ?? 1),
+      page_size: String(query.page_size ?? 50)
+    }
+  );
+
+export const getTransferenciasDiscricionariasDesembolsosPorProponente = (
+  token: string,
+  query: {
+    cnpj?: string;
+    nome_proponente?: string;
+    ano?: number;
+    mes?: number;
+    page?: number;
+    page_size?: number;
+  }
+) =>
+  request<TransferenciaDiscricionariaDesembolsoProponenteResponse>(
+    "/api/v1/transferencias-discricionarias/desembolsos/proponente",
+    {
+      headers: {
+        Authorization: `Bearer ${token}`
+      }
+    },
+    {
+      cnpj: query.cnpj ?? "",
+      nome_proponente: query.nome_proponente ?? "",
+      ano: query.ano ? String(query.ano) : "",
+      mes: query.mes ? String(query.mes) : "",
+      page: String(query.page ?? 1),
+      page_size: String(query.page_size ?? 100)
+    }
+  );
+
+export const getTransferenciasDiscricionariasFiltros = (token: string) =>
+  request<TransferenciaDiscricionariaFiltrosResponse>("/api/v1/transferencias-discricionarias/filtros", {
+    headers: {
+      Authorization: `Bearer ${token}`
+    }
+  });
+
+export const getTransferenciasDiscricionariasProponenteSugestoes = (
+  token: string,
+  query: { cnpj: string; limit?: number }
+) =>
+  request<TransferenciaDiscricionariaProponenteSugestaoResponse>(
+    "/api/v1/transferencias-discricionarias/proponentes/sugestoes",
+    {
+      headers: {
+        Authorization: `Bearer ${token}`
+      }
+    },
+    {
+      cnpj: query.cnpj,
+      limit: String(query.limit ?? 10)
+    }
+  );
+
+export const getTransferenciasDiscricionariasSyncStatus = (token: string) =>
+  request<TransferenciaDiscricionariaSyncState>("/api/v1/transferencias-discricionarias/sincronizacao", {
+    headers: {
+      Authorization: `Bearer ${token}`
+    }
+  });
+
+export const syncTransferenciasDiscricionarias = (token: string, force = true) =>
+  request<TransferenciaDiscricionariaSyncResult>("/api/v1/transferencias-discricionarias/sincronizar", {
+    method: "POST",
+    headers: {
+      Authorization: `Bearer ${token}`
+    },
+    body: JSON.stringify({ force })
+  });
 
 export const listTickets = (
   token: string,
@@ -791,7 +1031,7 @@ export const listSolicitacoesCaixa = (token: string, instrumentId: number, optio
   if (options?.limit) params.limit = String(options.limit);
   if (options?.offset) params.offset = String(options.offset);
   return request<{ itens: SolicitacaoCaixaItem[]; total: number }>(
-    `/api/v1/solicitacoes-caixa/instrumentos/${instrumentId}/solicitacoes`,
+    `/api/v1/solicitacao-caixa/instrumentos/${instrumentId}/solicitacoes`,
     {
       headers: { Authorization: `Bearer ${token}` },
       ...(Object.keys(params).length > 0 ? { params } : {})
@@ -808,7 +1048,7 @@ export type InstrumentoSearchItem = {
 };
 
 export const searchInstrumentos = (token: string, q: string) =>
-  request<InstrumentoSearchItem[]>(`/api/v1/solicitacoes-caixa/instrumentos/search?q=${encodeURIComponent(q)}`, {
+  request<InstrumentoSearchItem[]>(`/api/v1/solicitacao-caixa/instrumentos/search?q=${encodeURIComponent(q)}`, {
     headers: { Authorization: `Bearer ${token}` }
   });
 
@@ -1050,4 +1290,117 @@ export const downloadDocument = async (token: string, id: number, fallbackName =
   link.click();
   document.body.removeChild(link);
   URL.revokeObjectURL(url);
+};
+
+export const createDocumentAiRequest = (
+  token: string,
+  payload: {
+    titulo: string;
+    descricao?: string;
+    prioridade?: DocumentAiRequestPriority;
+    prazo?: string;
+  }
+) =>
+  request<DocumentAiRequestItem>("/api/v1/documents/ai-requests", {
+    method: "POST",
+    headers: { Authorization: `Bearer ${token}` },
+    body: JSON.stringify(payload)
+  });
+
+export const listDocumentAiRequests = (
+  token: string,
+  query?: {
+    status?: DocumentAiRequestStatus;
+    prioridade?: DocumentAiRequestPriority;
+    q?: string;
+    limit?: number;
+    offset?: number;
+  }
+) =>
+  request<{ itens: DocumentAiRequestItem[]; total: number }>(
+    "/api/v1/documents/ai-requests",
+    {
+      headers: { Authorization: `Bearer ${token}` }
+    },
+    {
+      status: query?.status ?? "",
+      prioridade: query?.prioridade ?? "",
+      q: query?.q ?? "",
+      limit: query?.limit ? String(query.limit) : "",
+      offset: query?.offset ? String(query.offset) : ""
+    }
+  );
+
+export const getDocumentAiRequestById = (token: string, id: number) =>
+  request<DocumentAiRequestItem>(`/api/v1/documents/ai-requests/${id}`, {
+    headers: { Authorization: `Bearer ${token}` }
+  });
+
+export const updateDocumentAiRequest = (
+  token: string,
+  id: number,
+  payload: Partial<{
+    titulo: string;
+    descricao: string | null;
+    prioridade: DocumentAiRequestPriority;
+    status: DocumentAiRequestStatus;
+    prazo: string | null;
+  }>
+) =>
+  request<DocumentAiRequestItem>(`/api/v1/documents/ai-requests/${id}`, {
+    method: "PATCH",
+    headers: { Authorization: `Bearer ${token}` },
+    body: JSON.stringify(payload)
+  });
+
+export const createDocumentAiRequestPublicLink = (
+  token: string,
+  id: number,
+  payload?: {
+    validade_dias?: number;
+  }
+) =>
+  request<{
+    token: string;
+    ativo: boolean;
+    expira_em: string;
+    validade_dias: number;
+    link_publico: string;
+  }>(`/api/v1/documents/ai-requests/${id}/public-link`, {
+    method: "POST",
+    headers: { Authorization: `Bearer ${token}` },
+    body: JSON.stringify(payload ?? {})
+  });
+
+export const deactivateDocumentAiRequestPublicLink = (token: string, id: number) =>
+  request<{ message: string; desativados: number }>(`/api/v1/documents/ai-requests/${id}/public-link`, {
+    method: "DELETE",
+    headers: { Authorization: `Bearer ${token}` }
+  });
+
+export const uploadDocumentForAiRequest = (
+  token: string,
+  id: number,
+  payload: {
+    arquivos: File[];
+    titulo_documento?: string;
+    descricao_documento?: string;
+  }
+) => {
+  const formData = new FormData();
+  for (const file of payload.arquivos) {
+    formData.append("arquivos", file);
+  }
+  if (payload.titulo_documento?.trim()) {
+    formData.append("titulo_documento", payload.titulo_documento.trim());
+  }
+  if (payload.descricao_documento?.trim()) {
+    formData.append("descricao_documento", payload.descricao_documento.trim());
+  }
+
+  return request<{ request: DocumentAiRequestItem; documentos: DocumentItem[] }>(`/api/v1/documents/ai-requests/${id}/upload`, {
+    method: "POST",
+    headers: { Authorization: `Bearer ${token}` },
+    body: formData
+  });
 };
