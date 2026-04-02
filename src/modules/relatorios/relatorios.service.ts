@@ -25,6 +25,8 @@ type InstrumentWithReportData = {
   agencia: string | null;
   conta: string | null;
   orgaoExecutor: string | null;
+  empresaVencedora: string | null;
+  cnpjVencedora: string | null;
   repasses: Array<{
     id: number;
     dataRepasse: Date;
@@ -72,6 +74,8 @@ export const buildRepasseReport = async (query: RepasseReportQueryInput) => {
       agencia: true,
       conta: true,
       orgaoExecutor: true,
+      empresaVencedora: true,
+      cnpjVencedora: true,
       repasses: {
         where: {
           dataRepasse: repasseWhere
@@ -139,8 +143,11 @@ export const buildRepasseReport = async (query: RepasseReportQueryInput) => {
   return {
     filtros: {
       convenete_id: convenete.id,
+      proponente_id: convenete.id,
       convenete_nome: convenete.nome,
+      proponente_nome: convenete.nome,
       convenete_cnpj: convenete.cnpj,
+      proponente_cnpj: convenete.cnpj,
       instrumento_id: query.instrumento_id ?? null,
       data_de: query.data_de ?? null,
       data_ate: query.data_ate ?? null
@@ -178,7 +185,7 @@ export const buildRepasseReport = async (query: RepasseReportQueryInput) => {
       banco: item.banco,
       agencia: item.agencia,
       conta: item.conta,
-      empresa_vencedora: item.orgaoExecutor,
+      empresa_vencedora: item.empresaVencedora ?? item.orgaoExecutor,
       valor_pactuado: Number(item.valorRepasse),
       valor_ja_repassado: Number(item.valorJaRepassado),
       valor_repassado_periodo: repassesByInstrument.get(item.id) ?? 0,
@@ -187,7 +194,10 @@ export const buildRepasseReport = async (query: RepasseReportQueryInput) => {
     })),
     repasses: repasses.map((item) => ({
       ...item,
-      empresa_vencedora: instrumentLookup.get(item.instrumento_id)?.orgaoExecutor ?? null
+      empresa_vencedora:
+        instrumentLookup.get(item.instrumento_id)?.empresaVencedora ??
+        instrumentLookup.get(item.instrumento_id)?.orgaoExecutor ??
+        null
     }))
   };
 };
@@ -336,7 +346,9 @@ export const buildObraReport = async (query: ObraReportQueryInput) => {
       objeto: item.objeto,
       status: item.status,
       convenete_id: item.convenete?.id ?? null,
+      proponente_id: item.convenete?.id ?? null,
       convenete_nome: item.convenete?.nome ?? null,
+      proponente_nome: item.convenete?.nome ?? null,
       orgao_concedente: item.concedente,
       banco: item.banco,
       agencia: item.agencia,
@@ -369,6 +381,7 @@ export const buildObraReport = async (query: ObraReportQueryInput) => {
   return {
     filtros: {
       convenete_id: query.convenete_id ?? null,
+      proponente_id: query.convenete_id ?? null,
       instrumento_id: query.instrumento_id ?? null,
       status: query.status ?? null,
       ativo: query.ativo,

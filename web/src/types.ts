@@ -823,3 +823,247 @@ export type TransferenciaDiscricionariaDesembolsoProponenteResponse = {
     total_registros: number;
   };
 };
+
+export type FnsUfItem = {
+  id: string;
+  nome: string;
+  nomeAcentuado: string;
+  sigla: string;
+};
+
+export type FnsMunicipioItem = {
+  codigo: string;
+  descricao: string;
+};
+
+export type FnsEntidadeItem = {
+  nome: string;
+  cnpj: string;
+  municipal: boolean;
+  estadual: boolean;
+  privada: boolean;
+  brasilia: boolean;
+};
+
+export type FnsRepassesResponse = {
+  quantidade: number;
+  valor: number;
+  itens: Array<{
+    codigoBloco: string;
+    nomeBloco: string;
+    valorRepassado: number;
+  }>;
+};
+
+export type FnsRepassesDetalheResponse = {
+  quantidade: number;
+  valor: number;
+  itens: Array<{
+    descricaoTipoCompetencia?: string | null;
+    descricaoCompetencia?: string | null;
+    nomeBloco?: string | null;
+    nomeGrupo?: string | null;
+    numeroProcesso?: string | null;
+    numeroOB?: string | null;
+    dataOB?: string | null;
+    valorRepassado?: number | null;
+    codigoBanco?: string | null;
+    numeroAgencia?: string | null;
+    numeroConta?: string | null;
+    nomeAcao?: string | null;
+  }>;
+};
+
+export type FnsSaldosTiposContaResponse = {
+  quantidade: number;
+  valor: number;
+  itens: Array<{
+    idTipoConta: number;
+    sigla: string;
+    descricao: string;
+    valorSaldo: number;
+  }>;
+};
+
+export type FnsSyncStatus = {
+  status: "idle" | "running" | "ok" | "error";
+  atualizado_em: string | null;
+  detalhe: string | null;
+  total_requisicoes: number;
+  falhas: number;
+  ttl_cache_ms: number;
+  entradas_cache: number;
+};
+
+export type ConsultaFnsUfItem = {
+  coUfIbge: string;
+  sigla: string;
+  nome: string;
+  id: string;
+};
+
+export type ConsultaFnsAnoItem = {
+  valor: string;
+  descricao: string;
+};
+
+export type ConsultaFnsMunicipioItem = {
+  coMunicipioIbge: string;
+  noMunicipio: string;
+  sgUf: string;
+};
+
+export type ConsultaFnsPropostaItem = {
+  coTipoProposta: string;
+  dsTipoRecurso: string;
+  nuProposta?: string;
+  noEntidade?: string;
+  vlProposta: number;
+  vlPago: number;
+  vlPagar: number;
+  nuProcesso?: string;
+  parlamentares?: Array<{
+    sgPartido?: string;
+    noApelidoPolitico?: string;
+    vlIndObjeto?: number;
+    coEmendaPolitica?: string;
+    nuAnoExercicio?: string;
+  }>;
+  linhaPropostas?: Array<{
+    nuProposta?: string;
+  }>;
+  constituidoProcesso: boolean;
+};
+
+export type ConsultaFnsPropostasResponse = {
+  itens: ConsultaFnsPropostaItem[];
+  paginacao: {
+    pagina: number;
+    tamanho_pagina: number;
+    total: number;
+    total_paginas: number;
+    tem_proxima: boolean;
+    tem_anterior: boolean;
+  };
+};
+
+export type ConsultaFnsPropostaDetalhe = {
+  nuProposta: string;
+  sgUf: string;
+  noMunicipio: string;
+  cnpj: string;
+  noEntidade: string;
+  coTipoProposta: string;
+  vlProposta: number;
+  nuAnoProposta: string;
+  dsTipoRecurso: string;
+  coEsfera: string;
+  nuPortaria: string | null;
+  nuProcesso: string | null;
+  dtPortaria: number | null;
+  situacao: {
+    descricaoSituacaoproposta: string;
+    dataSituacaoProjeto?: number | null;
+  };
+  vlEmpenhado: number;
+  vlPago: number;
+  vlPagar: number;
+  parlamentares: Array<{
+    sgPartido: string;
+    noApelidoPolitico: string;
+    vlIndObjeto: number;
+    coEmendaPolitica: string;
+    nuAnoExercicio: string;
+  }>;
+  pagamentos: Array<{
+    dtCriacaoSiafi: number;
+    nuParcela: string;
+    localizacao: string;
+    nuProcesso: string;
+    nuOb: string;
+    vlLiquido: number;
+    vlAcumulado: number;
+  }>;
+  constituidoProcesso: boolean;
+};
+
+export type ConsultaFnsSyncStatus = {
+  status: "idle" | "running" | "ok" | "error";
+  atualizado_em: string | null;
+  detalhe: string | null;
+  total_requisicoes: number;
+  total_itens: number;
+  falhas: number;
+  ttl_cache_ms: number;
+  entradas_cache: number;
+};
+
+export type SimecUfItem = {
+  uf: string;
+  sigla: string;
+  nome: string;
+};
+
+export type SimecMunicipioItem = {
+  codigo: string;
+  uf: string;
+  nome: string;
+};
+
+export type SimecObraResumoItem = {
+  obra_id: number;
+  titulo: string;
+  situacao: string | null;
+  localizacao: string | null;
+  esfera: string | null;
+  tipo: string | null;
+  vigencia_fim: string | null;
+  valor_previsto: number | null;
+  valor_pago_fnde: number | null;
+  percentual_execucao: number | null;
+  detalhe_url: string;
+};
+
+export type SimecObrasResponse = {
+  filtros: {
+    uf: string;
+    muncod: string;
+    esfera?: string;
+    tipologia?: string;
+    obrid?: string;
+  };
+  total: number;
+  itens: SimecObraResumoItem[];
+};
+
+export type SimecObraDetalhe = {
+  obra_id: number;
+  titulo: string | null;
+  detalhe_url: string;
+  detalhes: Record<string, string>;
+};
+
+export type AssistenteIntencao =
+  | "convenios_cidade"
+  | "desembolso_cidade"
+  | "percentual_obra"
+  | "tickets_atrasados_sem_responsavel"
+  | "vigencias_instrumentos"
+  | "ranking_cidades_desembolso"
+  | "nao_entendida";
+
+export type AssistenteHistoricoItem = {
+  role: "user" | "assistant";
+  text: string;
+};
+
+export type AssistenteResposta = {
+  pergunta: string;
+  intencao: AssistenteIntencao;
+  confianca: "alta" | "media" | "baixa";
+  resposta: string;
+  dados?: Record<string, unknown>;
+  sugestoes: string[];
+  contexto_usado?: boolean;
+  pergunta_interpretada?: string;
+};

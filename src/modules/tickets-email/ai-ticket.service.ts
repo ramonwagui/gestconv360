@@ -15,6 +15,10 @@ type InstrumentHint = {
   instrumento: string | null;
 };
 
+type SenderNameHint = {
+  nome: string | null;
+};
+
 const getOpenAIClient = () => {
   if (!env.openaiApiKey || !env.aiTicketSummaryEnabled) {
     return null;
@@ -79,6 +83,24 @@ Instrumentos disponiveis:
 ${instrumentList || "(vazio)"}
 
 Assunto: ${subject}
+Corpo:
+${body}`;
+};
+
+const buildSenderNamePrompt = (fromEmail: string, body: string) => {
+  return `Voce identifica o nome do remetente no corpo de um email.
+
+Retorne APENAS JSON valido no formato:
+{
+  "nome": "string ou null"
+}
+
+Regras:
+- Priorize assinatura no final do email.
+- Se houver somente email, retorne null.
+- Nao invente nome.
+
+Email remetente: ${fromEmail}
 Corpo:
 ${body}`;
 };
@@ -184,6 +206,48 @@ export const identifyInstrumentWithAI = async (subject: string, body: string): P
       proposta: parsed.proposta ? String(parsed.proposta).trim() : null,
       instrumento: parsed.instrumento ? String(parsed.instrumento).trim() : null
     };
+  } catch {
+    return null;
+  }
+};
+
+export const identifySenderNameWithAI = async (fromEmail: string, body: string): Promise<string | null> => {
+  const client = getOpenAIClient();
+  if (!client) {
+    return null;
+  }
+
+  try {
+    const truncatedBody = body.length > 3500 ? `${body.slice(0, 3500)}\n\n[texto truncado]` : body;
+
+    const response = await client.chat.completions.create({
+      model: env.openaiModel,
+      temperature: 0,
+      max_tokens: 120,
+      messages: [
+        {
+          role: "system",
+          content: "Retorne somente JSON valido. Nao use markdown."
+        },
+        {
+          role: "user",
+          content: buildSenderNamePrompt(fromEmail, truncatedBody)
+        }
+      ]
+    });
+
+    const content = response.choices[0]?.message?.content?.trim();
+    if (!content) {
+      return null;
+    }
+
+    const parsed = safeParseJson<SenderNameHint>(content);
+    if (!parsed || !parsed.nome) {
+      return null;
+    }
+
+    const nome = parsed.nome.trim();
+    return nome.length >= 3 ? nome.slice(0, 120) : null;
   } catch {
     return null;
   }

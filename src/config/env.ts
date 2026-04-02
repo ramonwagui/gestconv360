@@ -10,6 +10,24 @@ export const env = {
     process.env.TRANSFERENCIAS_ESPECIAIS_BASE_URL ?? "https://api.transferegov.gestao.gov.br/transferenciasespeciais",
   transferenciasEspeciaisTimeoutMs: Number(process.env.TRANSFERENCIAS_ESPECIAIS_TIMEOUT_MS ?? 15000),
   transferenciasEspeciaisCacheTtlMs: Number(process.env.TRANSFERENCIAS_ESPECIAIS_CACHE_TTL_MS ?? 60000),
+  transferenciasEspeciaisNotifyEnabled: process.env.TRANSFERENCIAS_ESPECIAIS_NOTIFY_ENABLED === "true",
+  transferenciasEspeciaisNotifyEmails: process.env.TRANSFERENCIAS_ESPECIAIS_NOTIFY_EMAILS ?? "",
+  transferenciasEspeciaisNotifyAno: Number(
+    process.env.TRANSFERENCIAS_ESPECIAIS_NOTIFY_ANO ?? new Date().getFullYear()
+  ),
+  transferenciasEspeciaisNotifyPollIntervalMs: Number(
+    process.env.TRANSFERENCIAS_ESPECIAIS_NOTIFY_POLL_INTERVAL_MS ?? 900000
+  ),
+  fnsRepassesBaseUrl: process.env.FNS_REPASSES_BASE_URL ?? "https://investsus-cidadao-bff.saude.gov.br",
+  fnsRepassesTimeoutMs: Number(process.env.FNS_REPASSES_TIMEOUT_MS ?? 15000),
+  fnsRepassesCacheTtlMs: Number(process.env.FNS_REPASSES_CACHE_TTL_MS ?? 600000),
+  consultaFnsBaseUrl: process.env.CONSULTA_FNS_BASE_URL ?? "https://consultafns.saude.gov.br",
+  consultaFnsTimeoutMs: Number(process.env.CONSULTA_FNS_TIMEOUT_MS ?? 20000),
+  consultaFnsCacheTtlMs: Number(process.env.CONSULTA_FNS_CACHE_TTL_MS ?? 600000),
+  simecObrasBaseUrl: process.env.SIMEC_OBRAS_BASE_URL ?? "https://simec.mec.gov.br/painelObras",
+  simecObrasTimeoutMs: Number(process.env.SIMEC_OBRAS_TIMEOUT_MS ?? 20000),
+  simecObrasCacheTtlMs: Number(process.env.SIMEC_OBRAS_CACHE_TTL_MS ?? 600000),
+  simecObrasInsecureTls: process.env.SIMEC_OBRAS_INSECURE_TLS !== "false",
   transferenciasDiscricionariasSyncEnabled: process.env.TRANSFERENCIAS_DISCRICIONARIAS_SYNC_ENABLED === "true",
   transferenciasDiscricionariasSyncIntervalMs: Number(
     process.env.TRANSFERENCIAS_DISCRICIONARIAS_SYNC_INTERVAL_MS ?? 21600000

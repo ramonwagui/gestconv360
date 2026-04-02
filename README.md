@@ -99,6 +99,24 @@ Endpoints administrativos (somente ADMIN):
 - `GET /api/v1/tickets-email/status`
 - `POST /api/v1/tickets-email/sync`
 
+## Solicitacoes de arquivos (Documentos IA)
+
+Foi adicionado um fluxo manual para solicitar documentos que serao anexados e armazenados no modulo de documentos.
+
+Agora o fluxo suporta link publico com envio de varios PDFs (em lote) para cada solicitacao, dentro do menu `Documentos IA`.
+
+- `POST /api/v1/documents/ai-requests`
+- `GET /api/v1/documents/ai-requests`
+- `GET /api/v1/documents/ai-requests/:id`
+- `PATCH /api/v1/documents/ai-requests/:id`
+- `POST /api/v1/documents/ai-requests/:id/public-link`
+- `DELETE /api/v1/documents/ai-requests/:id/public-link`
+- `POST /api/v1/documents/ai-requests/:id/upload`
+- `GET /api/v1/public/document-ai-requests/:token`
+- `POST /api/v1/public/document-ai-requests/:token/upload`
+
+Quando o upload e feito com sucesso, o sistema cria um ou mais `Document`, vincula na solicitacao e agenda a indexacao IA.
+
 ## URL principal
 
 - API: `http://localhost:3000`

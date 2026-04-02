@@ -1,4 +1,6 @@
 import type {
+  AssistenteHistoricoItem,
+  AssistenteResposta,
   ApiError,
   AuditAction,
   AuditLogItem,
@@ -33,6 +35,23 @@ import type {
   TransferenciaDiscricionariaSyncResult,
   TransferenciaDiscricionariaSyncState,
   TransferenciaEspecialPlanoAcaoResponse,
+  ConsultaFnsAnoItem,
+  ConsultaFnsMunicipioItem,
+  ConsultaFnsPropostaDetalhe,
+  ConsultaFnsPropostasResponse,
+  ConsultaFnsSyncStatus,
+  ConsultaFnsUfItem,
+  FnsEntidadeItem,
+  FnsMunicipioItem,
+  FnsRepassesDetalheResponse,
+  FnsRepassesResponse,
+  FnsSaldosTiposContaResponse,
+  FnsSyncStatus,
+  FnsUfItem,
+  SimecMunicipioItem,
+  SimecObraDetalhe,
+  SimecObrasResponse,
+  SimecUfItem,
   Role,
   Ticket,
   TicketPriority,
@@ -893,6 +912,253 @@ export const syncTransferenciasDiscricionarias = (token: string, force = true) =
     body: JSON.stringify({ force })
   });
 
+export const getFnsSyncStatus = (token: string) =>
+  request<FnsSyncStatus>("/api/v1/fns/status", {
+    headers: {
+      Authorization: `Bearer ${token}`
+    }
+  });
+
+export const getFnsUfs = (token: string) =>
+  request<{ itens: FnsUfItem[] }>("/api/v1/fns/ufs", {
+    headers: {
+      Authorization: `Bearer ${token}`
+    }
+  });
+
+export const getFnsMunicipios = (token: string, query: { uf_id?: number }) =>
+  request<{ itens: FnsMunicipioItem[] }>(
+    "/api/v1/fns/municipios",
+    {
+      headers: {
+        Authorization: `Bearer ${token}`
+      }
+    },
+    {
+      uf_id: query.uf_id ? String(query.uf_id) : ""
+    }
+  );
+
+export const getFnsEntidades = (token: string, query: { co_ibge_municipio: number }) =>
+  request<{ itens: FnsEntidadeItem[] }>(
+    "/api/v1/fns/entidades",
+    {
+      headers: {
+        Authorization: `Bearer ${token}`
+      }
+    },
+    {
+      co_ibge_municipio: String(query.co_ibge_municipio)
+    }
+  );
+
+export const getFnsRepasses = (token: string, query: { ano?: number; cnpj?: string }) =>
+  request<FnsRepassesResponse>(
+    "/api/v1/fns/repasses",
+    {
+      headers: {
+        Authorization: `Bearer ${token}`
+      }
+    },
+    {
+      ano: query.ano ? String(query.ano) : "",
+      cnpj: query.cnpj ?? ""
+    }
+  );
+
+export const getFnsRepassesDetalhe = (
+  token: string,
+  query: { ano?: number; cnpj?: string; codigo_bloco?: string }
+) =>
+  request<FnsRepassesDetalheResponse>(
+    "/api/v1/fns/repasses/detalhe",
+    {
+      headers: {
+        Authorization: `Bearer ${token}`
+      }
+    },
+    {
+      ano: query.ano ? String(query.ano) : "",
+      cnpj: query.cnpj ?? "",
+      codigo_bloco: query.codigo_bloco ?? ""
+    }
+  );
+
+export const getFnsSaldosTiposConta = (token: string, query: { cnpj?: string }) =>
+  request<FnsSaldosTiposContaResponse>(
+    "/api/v1/fns/saldos/tipos-contas",
+    {
+      headers: {
+        Authorization: `Bearer ${token}`
+      }
+    },
+    {
+      cnpj: query.cnpj ?? ""
+    }
+  );
+
+export const syncFnsCache = (
+  token: string,
+  payload: { ano?: number; cnpjs: string[]; incluir_ufs?: boolean }
+) =>
+  request<{
+    status: "running" | "ok" | "error";
+    atualizado_em?: string | null;
+    detalhe?: string | null;
+    total_requisicoes?: number;
+    falhas?: number;
+  }>("/api/v1/fns/sync", {
+    method: "POST",
+    headers: {
+      Authorization: `Bearer ${token}`
+    },
+    body: JSON.stringify(payload)
+  });
+
+export const getConsultaFnsStatus = (token: string) =>
+  request<ConsultaFnsSyncStatus>("/api/v1/consultafns/status", {
+    headers: {
+      Authorization: `Bearer ${token}`
+    }
+  });
+
+export const getConsultaFnsUfs = (token: string) =>
+  request<{ itens: ConsultaFnsUfItem[] }>("/api/v1/consultafns/ufs", {
+    headers: {
+      Authorization: `Bearer ${token}`
+    }
+  });
+
+export const getConsultaFnsAnos = (token: string) =>
+  request<{ itens: ConsultaFnsAnoItem[] }>("/api/v1/consultafns/anos", {
+    headers: {
+      Authorization: `Bearer ${token}`
+    }
+  });
+
+export const getConsultaFnsMunicipios = (token: string, query: { uf: string }) =>
+  request<{ itens: ConsultaFnsMunicipioItem[] }>(
+    "/api/v1/consultafns/municipios",
+    {
+      headers: {
+        Authorization: `Bearer ${token}`
+      }
+    },
+    {
+      uf: query.uf
+    }
+  );
+
+export const getConsultaFnsPropostas = (
+  token: string,
+  query: {
+    ano?: number;
+    uf?: string;
+    co_municipio_ibge?: string;
+    nu_proposta?: string;
+    tp_proposta?: string;
+    tp_recurso?: string;
+    tp_emenda?: string;
+    page?: number;
+    count?: number;
+  }
+) =>
+  request<ConsultaFnsPropostasResponse>(
+    "/api/v1/consultafns/propostas",
+    {
+      headers: {
+        Authorization: `Bearer ${token}`
+      }
+    },
+    {
+      ano: query.ano ? String(query.ano) : "",
+      uf: query.uf ?? "",
+      co_municipio_ibge: query.co_municipio_ibge ?? "",
+      nu_proposta: query.nu_proposta ?? "",
+      tp_proposta: query.tp_proposta ?? "",
+      tp_recurso: query.tp_recurso ?? "",
+      tp_emenda: query.tp_emenda ?? "",
+      page: String(query.page ?? 1),
+      count: String(query.count ?? 20)
+    }
+  );
+
+export const getConsultaFnsPropostaDetalhe = (token: string, nuProposta: string) =>
+  request<ConsultaFnsPropostaDetalhe>(`/api/v1/consultafns/propostas/${encodeURIComponent(nuProposta)}`, {
+    headers: {
+      Authorization: `Bearer ${token}`
+    }
+  });
+
+export const syncConsultaFnsCache = (token: string, payload: { ano?: number; pages_max?: number; count?: number }) =>
+  request<{
+    status: "running" | "ok" | "error";
+    atualizado_em?: string | null;
+    detalhe?: string | null;
+    total_requisicoes?: number;
+    total_itens?: number;
+    falhas?: number;
+  }>("/api/v1/consultafns/sync", {
+    method: "POST",
+    headers: {
+      Authorization: `Bearer ${token}`
+    },
+    body: JSON.stringify(payload)
+  });
+
+export const getSimecUfs = (token: string) =>
+  request<{ itens: SimecUfItem[] }>("/api/v1/simec-obras/ufs", {
+    headers: {
+      Authorization: `Bearer ${token}`
+    }
+  });
+
+export const getSimecMunicipios = (token: string, query: { uf: string }) =>
+  request<{ itens: SimecMunicipioItem[] }>(
+    "/api/v1/simec-obras/municipios",
+    {
+      headers: {
+        Authorization: `Bearer ${token}`
+      }
+    },
+    {
+      uf: query.uf
+    }
+  );
+
+export const getSimecObras = (
+  token: string,
+  query: {
+    uf: string;
+    muncod: string;
+    esfera?: string;
+    tipologia?: string;
+    obrid?: string;
+  }
+) =>
+  request<SimecObrasResponse>(
+    "/api/v1/simec-obras/obras",
+    {
+      headers: {
+        Authorization: `Bearer ${token}`
+      }
+    },
+    {
+      uf: query.uf,
+      muncod: query.muncod,
+      esfera: query.esfera ?? "",
+      tipologia: query.tipologia ?? "",
+      obrid: query.obrid ?? ""
+    }
+  );
+
+export const getSimecObraDetalhe = (token: string, obraId: number) =>
+  request<SimecObraDetalhe>(`/api/v1/simec-obras/obras/${obraId}`, {
+    headers: {
+      Authorization: `Bearer ${token}`
+    }
+  });
+
 export const listTickets = (
   token: string,
   query?: {
@@ -1222,6 +1488,13 @@ export const askDocumentQuestion = (token: string, id: number, pergunta: string)
     method: "POST",
     headers: { Authorization: `Bearer ${token}` },
     body: JSON.stringify({ pergunta })
+  });
+
+export const askAssistentePergunta = (token: string, pergunta: string, historico: AssistenteHistoricoItem[] = []) =>
+  request<AssistenteResposta>("/api/v1/assistente/perguntar", {
+    method: "POST",
+    headers: { Authorization: `Bearer ${token}` },
+    body: JSON.stringify({ pergunta, historico })
   });
 
 export const applyDocumentOcrText = (token: string, id: number, texto: string) =>

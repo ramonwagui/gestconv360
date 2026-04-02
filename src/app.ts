@@ -6,15 +6,19 @@ import helmet from "helmet";
 import morgan from "morgan";
 
 import { authRouter } from "./modules/auth/auth.routes";
+import { assistenteRouter } from "./modules/assistente/assistente.routes";
 import { auditoriaRouter } from "./modules/auditoria/auditoria.routes";
 import { certificatesRouter } from "./modules/certificates/certificates.routes";
+import { consultaFnsPropostasRouter } from "./modules/consultafns-propostas/consultafns-propostas.routes";
 import { convenetesRouter } from "./modules/convenetes/convenetes.routes";
 import { documentsRouter } from "./modules/documents/documents.routes";
 import { documentAiRequestsRouter } from "./modules/documents/documents-ai-requests.routes";
 import { documentsPublicRouter } from "./modules/documents/documents.public.routes";
+import { fnsRepassesRouter } from "./modules/fns-repasses/fns-repasses.routes";
 import { instrumentosRouter } from "./modules/instrumentos/instrumentos.routes";
 import { instrumentosPublicRouter } from "./modules/instrumentos/instrumentos.public.routes";
 import { relatoriosRouter } from "./modules/relatorios/relatorios.routes";
+import { simecObrasRouter } from "./modules/simec-obras/simec-obras.routes";
 import { signatureRouter } from "./modules/signature/signature.routes";
 import { solicitacaoCaixaRouter } from "./modules/solicitacao-caixa/solicitacao-caixa.routes";
 import { ticketsEmailRouter } from "./modules/tickets-email/tickets-email.routes";
@@ -58,6 +62,7 @@ app.get("/", (_req, res) => {
       <li><code>/api/v1/usuarios</code></li>
       <li><code>/api/v1/tickets</code></li>
       <li><code>/api/v1/tickets-email</code></li>
+      <li><code>/api/v1/assistente</code></li>
     </ul>
   </body>
 </html>`);
@@ -82,8 +87,12 @@ app.use("/api/v1/relatorios", relatoriosRouter);
 app.use("/api/v1/usuarios", usuariosRouter);
 app.use("/api/v1/tickets", ticketsRouter);
 app.use("/api/v1/tickets-email", ticketsEmailRouter);
+app.use("/api/v1/assistente", assistenteRouter);
 app.use("/api/v1/documents/ai-requests", documentAiRequestsRouter);
 app.use("/api/v1/documents", documentsRouter);
+app.use("/api/v1/consultafns", consultaFnsPropostasRouter);
+app.use("/api/v1/fns", fnsRepassesRouter);
+app.use("/api/v1/simec-obras", simecObrasRouter);
 app.use("/api/v1/certificates", certificatesRouter);
 app.use("/api/v1/signature", signatureRouter);
 app.use("/api/v1/solicitacao-caixa", solicitacaoCaixaRouter);

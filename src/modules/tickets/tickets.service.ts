@@ -43,6 +43,14 @@ const parseOptionalDate = (value?: string | null) => {
 
 const isResolvedStatus = (status: TicketStatus) => status === TicketStatus.RESOLVIDO;
 
+const touchTicketUpdatedAt = async (ticketId: number) => {
+  await prisma.ticket.update({
+    where: { id: ticketId },
+    data: { updatedAt: new Date() },
+    select: { id: true }
+  });
+};
+
 export const listAssignableUsers = async () => {
   return prisma.user.findMany({
     orderBy: [{ nome: "asc" }, { email: "asc" }],
@@ -225,6 +233,8 @@ export const addTicketChecklistItems = async (ticketId: number, items: string[])
     }))
   });
 
+  await touchTicketUpdatedAt(ticketId);
+
   return prisma.ticketChecklistItem.findMany({
     where: { ticketId },
     orderBy: [{ ordem: "asc" }, { id: "asc" }]
@@ -244,13 +254,17 @@ export const toggleTicketChecklistItem = async (ticketId: number, itemId: number
     throw new Error("TICKET_CHECKLIST_ITEM_NOT_FOUND");
   }
 
-  return prisma.ticketChecklistItem.update({
+  const updated = await prisma.ticketChecklistItem.update({
     where: { id: itemId },
     data: {
       concluido,
       concluidoEm: concluido ? new Date() : null
     }
   });
+
+  await touchTicketUpdatedAt(ticketId);
+
+  return updated;
 };
 
 export const createTicket = async (
@@ -363,6 +377,8 @@ export const addTicketComment = async (
   if (payload.userId) {
     await registrarComentario(id, input.mensagem);
   }
+
+  await touchTicketUpdatedAt(id);
 
   return comment;
 };

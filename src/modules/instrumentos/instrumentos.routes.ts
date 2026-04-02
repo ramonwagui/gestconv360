@@ -23,8 +23,6 @@ import {
   checklistItemUpdateSchema,
   createInstrumentSchema,
   listQuerySchema,
-  repasseCreateSchema,
-  repasseIdParamSchema,
   workProgressUpdateSchema,
   updateInstrumentSchema
 } from "./instrumentos.schema";
@@ -45,18 +43,17 @@ import {
   getChecklistItemById,
   getChecklistSummary,
   deactivateInstrument,
-  deleteRepasse,
   getDeadlineAlerts,
   getInstrumentById,
   getStageFollowUpFileById,
   getWorkProgress,
   listRepasses,
+  syncInstrumentRepassesFromDesembolsos,
   listChecklistExternalFiles,
   listStageFollowUps,
   listChecklistItems,
   listInstruments,
   syncAllExistingWorkflowChecklists,
-  createRepasse,
   createStageFollowUp,
   clearChecklistItemUpload,
   updateChecklistItem,
@@ -67,12 +64,28 @@ import {
 
 const router = Router();
 
+const normalizeProponenteAlias = <T extends Record<string, unknown>>(payload: T) => {
+  const next = { ...payload } as Record<string, unknown>;
+  const conveneteId = next.convenete_id;
+  const proponenteId = next.proponente_id;
+
+  if ((conveneteId === undefined || conveneteId === null || conveneteId === "") && proponenteId !== undefined) {
+    next.convenete_id = proponenteId;
+  }
+
+  return next as T;
+};
+
 const uploadRootPath = path.resolve(process.cwd(), "uploads", "instrumentos");
 const stageFollowUpUploadRootPath = path.join(uploadRootPath, "stage-followups");
 const allowedUploadMimes = new Set([
   "application/pdf",
   "application/msword",
   "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+  "application/vnd.ms-excel",
+  "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+  "application/vnd.ms-excel.sheet.macroEnabled.12",
+  "text/csv",
   "image/png",
   "image/jpeg"
 ]);
@@ -82,7 +95,7 @@ const upload = multer({
   limits: { fileSize: 10 * 1024 * 1024 },
   fileFilter: (_req, file, cb) => {
     if (!allowedUploadMimes.has(file.mimetype)) {
-      cb(new Error("Formato de arquivo nao permitido. Use PDF, DOC, DOCX, JPG ou PNG."));
+      cb(new Error("Formato de arquivo nao permitido. Use PDF, DOC, DOCX, XLS, XLSX, CSV, JPG ou PNG."));
       return;
     }
     cb(null, true);
@@ -149,6 +162,9 @@ type InstrumentSnapshotLike = {
   status: string;
   responsavel: string | null;
   orgaoExecutor: string | null;
+  empresaVencedora?: string | null;
+  cnpjVencedora?: string | null;
+  valorVencedor?: Prisma.Decimal | number | null;
   observacoes: string | null;
   ativo: boolean;
 };
@@ -181,6 +197,9 @@ const snapshotInstrument = (item: InstrumentSnapshotLike | null): AuditSnapshot 
     status: item.status,
     responsavel: item.responsavel,
     orgao_executor: item.orgaoExecutor,
+    empresa_vencedora: item.empresaVencedora ?? null,
+    cnpj_vencedora: item.cnpjVencedora ?? null,
+    valor_vencedor: item.valorVencedor !== null ? Number(item.valorVencedor) : null,
     observacoes: item.observacoes,
     ativo: item.ativo
   };
@@ -235,7 +254,7 @@ const mapChecklistItem = (instrumentId: number, item: any) => {
     arquivo:
       item.arquivoPath && item.arquivoNomeOriginal
         ? {
-            nome_original: item.arquivoNomeOriginal,
+            nome_original: normalizeUploadedFileName(item.arquivoNomeOriginal),
             mime_type: item.arquivoMimeType,
             tamanho: item.arquivoTamanho,
             uploaded_at: item.uploadedAt?.toISOString() ?? null,
@@ -254,7 +273,7 @@ const mapChecklistItem = (instrumentId: number, item: any) => {
     anexos_externos: externalFiles.map((file: any) => ({
       id: file.id,
       nome_remetente: file.nomeRemetente,
-      nome_original: file.arquivoNomeOriginal,
+      nome_original: normalizeUploadedFileName(file.arquivoNomeOriginal),
       mime_type: file.arquivoMimeType,
       tamanho: file.arquivoTamanho,
       created_at: file.createdAt.toISOString(),
@@ -270,6 +289,28 @@ const mapChecklistItem = (instrumentId: number, item: any) => {
 const buildAbsoluteUrl = (req: Request, pathValue: string) => {
   const host = req.get("host") ?? `localhost:${req.socket.localPort ?? 3000}`;
   return `${req.protocol}://${host}${pathValue}`;
+};
+
+const normalizeUploadedFileName = (name: string) => {
+  const trimmed = (name || "").trim();
+  if (trimmed.length === 0) {
+    return "arquivo";
+  }
+
+  const looksLikeMojibake = /[ÃÂ]|\uFFFD/.test(trimmed);
+  if (!looksLikeMojibake) {
+    return trimmed;
+  }
+
+  try {
+    const decoded = Buffer.from(trimmed, "latin1").toString("utf8").trim();
+    if (!decoded || decoded.includes("\uFFFD")) {
+      return trimmed;
+    }
+    return decoded;
+  } catch {
+    return trimmed;
+  }
 };
 
 const mapStageFollowUp = (
@@ -296,7 +337,7 @@ const mapStageFollowUp = (
     },
     arquivos: item.files.map((file: any) => ({
       id: file.id,
-      nome_original: file.arquivoNomeOriginal,
+      nome_original: normalizeUploadedFileName(file.arquivoNomeOriginal),
       mime_type: file.arquivoMimeType,
       tamanho: file.arquivoTamanho,
       created_at: file.createdAt.toISOString(),
@@ -308,7 +349,7 @@ const mapStageFollowUp = (
 };
 
 router.post("/", authorizeRoles(UserRole.ADMIN, UserRole.GESTOR), async (req, res) => {
-  const parsed = createInstrumentSchema.safeParse(req.body);
+  const parsed = createInstrumentSchema.safeParse(normalizeProponenteAlias(req.body as Record<string, unknown>));
   if (!parsed.success) {
     return res.status(422).json({
       message: "Payload invalido",
@@ -341,10 +382,10 @@ router.post("/", authorizeRoles(UserRole.ADMIN, UserRole.GESTOR), async (req, re
         return res.status(409).json({ message: "Proposta ou instrumento ja cadastrados." });
       }
       if (error.code === "P2003") {
-        return res.status(422).json({ message: "Convenete informado nao encontrado." });
+        return res.status(422).json({ message: "Proponente informado nao encontrado." });
       }
       if (error.code === "P2025") {
-        return res.status(422).json({ message: "Convenete informado nao encontrado." });
+        return res.status(422).json({ message: "Proponente informado nao encontrado." });
       }
     }
     return res.status(500).json({ message: "Erro interno ao criar registro." });
@@ -352,7 +393,7 @@ router.post("/", authorizeRoles(UserRole.ADMIN, UserRole.GESTOR), async (req, re
 });
 
 router.get("/", authorizeRoles(UserRole.ADMIN, UserRole.GESTOR, UserRole.CONSULTA), async (req, res) => {
-  const parsed = listQuerySchema.safeParse(req.query);
+  const parsed = listQuerySchema.safeParse(normalizeProponenteAlias(req.query as Record<string, unknown>));
   if (!parsed.success) {
     return res.status(422).json({
       message: "Filtros invalidos",
@@ -363,7 +404,20 @@ router.get("/", authorizeRoles(UserRole.ADMIN, UserRole.GESTOR, UserRole.CONSULT
   try {
     const items = await listInstruments(parsed.data);
     return res.json(items.map(mapInstrument));
-  } catch {
+  } catch (error) {
+    if (parsed.data.sync_repasses_desembolsos) {
+      try {
+        const fallbackItems = await listInstruments({
+          ...parsed.data,
+          sync_repasses_desembolsos: false
+        });
+        return res.json(fallbackItems.map(mapInstrument));
+      } catch {
+        // segue para erro 500 abaixo
+      }
+    }
+
+    console.error("[instrumentos] falha ao listar com sync de desembolsos", error);
     return res.status(500).json({ message: "Erro interno ao listar instrumentos." });
   }
 });
@@ -418,6 +472,7 @@ router.get("/:id/repasses", authorizeRoles(UserRole.ADMIN, UserRole.GESTOR, User
     return res.status(404).json({ message: "Registro nao encontrado." });
   }
 
+  await syncInstrumentRepassesFromDesembolsos(id);
   const repasses = await listRepasses(id);
   return res.json({
     itens: repasses.map((repasse: any) => ({
@@ -430,68 +485,16 @@ router.get("/:id/repasses", authorizeRoles(UserRole.ADMIN, UserRole.GESTOR, User
   });
 });
 
-router.post("/:id/repasses", authorizeRoles(UserRole.ADMIN, UserRole.GESTOR), async (req, res) => {
-  const id = Number(req.params.id);
-  if (Number.isNaN(id)) {
-    return res.status(400).json({ message: "ID invalido." });
-  }
-
-  const existing = await getInstrumentById(id);
-  if (!existing) {
-    return res.status(404).json({ message: "Registro nao encontrado." });
-  }
-
-  const parsed = repasseCreateSchema.safeParse(req.body);
-  if (!parsed.success) {
-    return res.status(422).json({
-      message: "Payload invalido",
-      issues: parsed.error.flatten()
-    });
-  }
-
-  try {
-    await createRepasse(id, parsed.data);
-    const updated = await getInstrumentById(id);
-    if (!updated) {
-      return res.status(404).json({ message: "Registro nao encontrado." });
-    }
-    return res.status(201).json(mapInstrument(updated));
-  } catch {
-    return res.status(500).json({ message: "Erro interno ao cadastrar repasse." });
-  }
+router.post("/:id/repasses", authorizeRoles(UserRole.ADMIN, UserRole.GESTOR), async (_req, res) => {
+  return res.status(410).json({
+    message: "Cadastro manual de repasse desativado. A lista e sincronizada automaticamente pelos desembolsos."
+  });
 });
 
-router.delete("/:id/repasses/:repasseId", authorizeRoles(UserRole.ADMIN, UserRole.GESTOR), async (req, res) => {
-  const id = Number(req.params.id);
-  if (Number.isNaN(id)) {
-    return res.status(400).json({ message: "ID invalido." });
-  }
-
-  const repasseParam = repasseIdParamSchema.safeParse(req.params);
-  if (!repasseParam.success) {
-    return res.status(400).json({ message: "Repasse invalido." });
-  }
-
-  const existing = await getInstrumentById(id);
-  if (!existing) {
-    return res.status(404).json({ message: "Registro nao encontrado." });
-  }
-
-  try {
-    const deleted = await deleteRepasse(id, repasseParam.data.repasseId);
-    if (!deleted) {
-      return res.status(404).json({ message: "Repasse nao encontrado." });
-    }
-
-    const updated = await getInstrumentById(id);
-    if (!updated) {
-      return res.status(404).json({ message: "Registro nao encontrado." });
-    }
-
-    return res.json(mapInstrument(updated));
-  } catch {
-    return res.status(500).json({ message: "Erro interno ao remover repasse." });
-  }
+router.delete("/:id/repasses/:repasseId", authorizeRoles(UserRole.ADMIN, UserRole.GESTOR), async (_req, res) => {
+  return res.status(410).json({
+    message: "Remocao manual de repasse desativada. A lista e sincronizada automaticamente pelos desembolsos."
+  });
 });
 
 router.get(
@@ -620,7 +623,7 @@ router.get(
       itens: files.map((file: any) => ({
         id: file.id,
         nome_remetente: file.nomeRemetente,
-        nome_original: file.arquivoNomeOriginal,
+        nome_original: normalizeUploadedFileName(file.arquivoNomeOriginal),
         mime_type: file.arquivoMimeType,
         tamanho: file.arquivoTamanho,
         created_at: file.createdAt.toISOString(),
@@ -659,7 +662,7 @@ router.get(
 
     try {
       await fs.access(file.arquivoPath);
-      return res.download(file.arquivoPath, file.arquivoNomeOriginal);
+      return res.download(file.arquivoPath, normalizeUploadedFileName(file.arquivoNomeOriginal));
     } catch {
       return res.status(404).json({ message: "Arquivo nao encontrado." });
     }
@@ -750,7 +753,7 @@ router.post(
         await fs.writeFile(destination, file.buffer);
         stagedFiles.push({
           arquivoPath: destination,
-          arquivoNomeOriginal: file.originalname,
+          arquivoNomeOriginal: normalizeUploadedFileName(file.originalname),
           arquivoMimeType: file.mimetype,
           arquivoTamanho: file.size
         });
@@ -814,7 +817,7 @@ router.get(
 
     try {
       await fs.access(file.arquivoPath);
-      return res.download(file.arquivoPath, file.arquivoNomeOriginal);
+      return res.download(file.arquivoPath, normalizeUploadedFileName(file.arquivoNomeOriginal));
     } catch {
       return res.status(404).json({ message: "Arquivo nao encontrado." });
     }
@@ -943,7 +946,7 @@ router.post(
 
     const updated = await updateChecklistItemUpload(id, itemParam.data.itemId, {
       arquivoPath: destination,
-      arquivoNomeOriginal: req.file.originalname,
+      arquivoNomeOriginal: normalizeUploadedFileName(req.file.originalname),
       arquivoMimeType: req.file.mimetype,
       arquivoTamanho: req.file.size
     });
@@ -1092,7 +1095,7 @@ router.get(
 
     try {
       await fs.access(item.arquivoPath);
-      return res.download(item.arquivoPath, item.arquivoNomeOriginal);
+      return res.download(item.arquivoPath, normalizeUploadedFileName(item.arquivoNomeOriginal));
     } catch {
       return res.status(404).json({ message: "Arquivo nao encontrado." });
     }
@@ -1121,7 +1124,7 @@ router.put("/:id", authorizeRoles(UserRole.ADMIN, UserRole.GESTOR), async (req, 
     return res.status(400).json({ message: "ID invalido." });
   }
 
-  const parsed = updateInstrumentSchema.safeParse(req.body);
+  const parsed = updateInstrumentSchema.safeParse(normalizeProponenteAlias(req.body as Record<string, unknown>));
   if (!parsed.success) {
     return res.status(422).json({
       message: "Payload invalido",
@@ -1187,7 +1190,7 @@ router.put("/:id", authorizeRoles(UserRole.ADMIN, UserRole.GESTOR), async (req, 
         return res.status(404).json({ message: "Registro nao encontrado." });
       }
       if (error.code === "P2003") {
-        return res.status(422).json({ message: "Convenete informado nao encontrado." });
+        return res.status(422).json({ message: "Proponente informado nao encontrado." });
       }
     }
     return res.status(500).json({ message: "Erro interno ao atualizar registro." });

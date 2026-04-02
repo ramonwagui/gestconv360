@@ -1,4 +1,6 @@
 import { TicketPriority, TicketSource, TicketStatus } from "@prisma/client";
+import bcrypt from "bcryptjs";
+import { randomUUID } from "node:crypto";
 import { gmail_v1, google } from "googleapis";
 
 import { env } from "../../config/env";
@@ -8,7 +10,8 @@ import {
   formatTicketDescriptionWithAI,
   getChecklistFromSummary,
   generateTicketSummary,
-  identifyInstrumentWithAI
+  identifyInstrumentWithAI,
+  identifySenderNameWithAI
 } from "./ai-ticket.service";
 import { registrarEmailRecebido } from "../solicitacao-caixa/solicitacao-caixa.service";
 
@@ -26,6 +29,9 @@ type IngestionRunOptions = {
 };
 
 const MAX_MESSAGES_PER_RUN = 20;
+
+const IN_PROGRESS_FROM_EMAIL = "processing@tickets-email.local";
+const IN_PROGRESS_ERROR_MARKER = "PROCESSAMENTO_EM_ANDAMENTO";
 
 const upsertIngestionRecord = async (
   gmailMessageId: string,
@@ -66,6 +72,30 @@ const upsertIngestionRecord = async (
   });
 };
 
+const tryClaimIngestionRecord = async (gmailMessageId: string) => {
+  try {
+    await prisma.ticketEmailIngestion.create({
+      data: {
+        gmailMessageId,
+        fromEmail: IN_PROGRESS_FROM_EMAIL,
+        statusProcessamento: "ERRO",
+        erro: IN_PROGRESS_ERROR_MARKER
+      }
+    });
+    return true;
+  } catch (error) {
+    if (
+      typeof error === "object" &&
+      error !== null &&
+      "code" in error &&
+      (error as { code?: string }).code === "P2002"
+    ) {
+      return false;
+    }
+    throw error;
+  }
+};
+
 const getAllowedDomains = () =>
   env.gmailTicketAllowedDomains
     .split(",")
@@ -89,6 +119,150 @@ const parseEmailAddress = (raw: string | null | undefined) => {
   }
   const match = raw.match(/<([^>]+)>/);
   return (match ? match[1] : raw).trim().toLowerCase();
+};
+
+const parseSenderNameFromFromHeader = (raw: string | null | undefined) => {
+  if (!raw) {
+    return null;
+  }
+
+  const beforeAngle = raw.includes("<") ? raw.split("<")[0] : raw;
+  const cleaned = beforeAngle.replace(/^"+|"+$/g, "").trim();
+  if (cleaned === "" || cleaned.includes("@")) {
+    return null;
+  }
+
+  return cleaned.slice(0, 120);
+};
+
+const isLikelyPersonName = (value: string | null | undefined) => {
+  if (!value) {
+    return false;
+  }
+
+  const trimmed = value.trim();
+  if (trimmed.length < 3 || trimmed.length > 120) {
+    return false;
+  }
+  if (trimmed.includes("@")) {
+    return false;
+  }
+
+  const letters = trimmed.match(/[A-Za-zÀ-ÿ]/g)?.length ?? 0;
+  const digits = trimmed.match(/\d/g)?.length ?? 0;
+  return letters >= 3 && digits <= 6;
+};
+
+const toTitleCase = (value: string) => {
+  return value
+    .split(/\s+/)
+    .filter((part) => part.length > 0)
+    .map((part) => `${part.charAt(0).toUpperCase()}${part.slice(1).toLowerCase()}`)
+    .join(" ");
+};
+
+const inferSenderNameFromEmailAddress = (fromEmail: string) => {
+  const localPart = fromEmail.split("@")[0] ?? "";
+  const normalized = localPart.replace(/[._-]+/g, " ").trim();
+  if (!isLikelyPersonName(normalized)) {
+    return "Remetente Externo";
+  }
+  return toTitleCase(normalized);
+};
+
+const extractSenderNameFromBody = (body: string) => {
+  const lines = body
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .filter((line) => line.length > 0);
+
+  if (lines.length === 0) {
+    return null;
+  }
+
+  const tail = lines.slice(-25);
+
+  for (let index = tail.length - 1; index >= 0; index -= 1) {
+    const line = tail[index];
+    const headerMatch = line.match(/^(?:remetente|de|from)\s*:\s*(.+)$/i);
+    if (headerMatch && isLikelyPersonName(headerMatch[1])) {
+      return headerMatch[1].trim().slice(0, 120);
+    }
+  }
+
+  for (let index = 0; index < tail.length; index += 1) {
+    if (/^(?:atenciosamente|att\.?|cordialmente|obrigad[oa]|abracos|abraços)[,:\-\s]*$/i.test(tail[index])) {
+      const candidate = tail[index + 1];
+      if (isLikelyPersonName(candidate)) {
+        return candidate.trim().slice(0, 120);
+      }
+    }
+  }
+
+  for (let index = tail.length - 1; index >= Math.max(0, tail.length - 6); index -= 1) {
+    const candidate = tail[index];
+    if (candidate && isLikelyPersonName(candidate)) {
+      return candidate.trim().slice(0, 120);
+    }
+  }
+
+  return null;
+};
+
+const resolveSenderDisplayName = async (fromHeader: string | null, fromEmail: string, bodyText: string) => {
+  const fromHeaderName = parseSenderNameFromFromHeader(fromHeader);
+  if (isLikelyPersonName(fromHeaderName)) {
+    return fromHeaderName as string;
+  }
+
+  const fromBody = extractSenderNameFromBody(bodyText);
+  if (isLikelyPersonName(fromBody)) {
+    return fromBody as string;
+  }
+
+  const fromAi = await identifySenderNameWithAI(fromEmail, bodyText);
+  if (isLikelyPersonName(fromAi)) {
+    return fromAi as string;
+  }
+
+  return inferSenderNameFromEmailAddress(fromEmail);
+};
+
+const resolveCreatorUserIdForSender = async (fromEmail: string, senderName: string, fallbackUserId: number) => {
+  if (!fromEmail.includes("@")) {
+    return fallbackUserId;
+  }
+
+  const normalizedEmail = fromEmail.toLowerCase();
+  const existing = await prisma.user.findUnique({
+    where: { email: normalizedEmail },
+    select: { id: true, nome: true }
+  });
+
+  if (existing) {
+    if (senderName && senderName !== existing.nome && existing.nome === inferSenderNameFromEmailAddress(normalizedEmail)) {
+      await prisma.user.update({ where: { id: existing.id }, data: { nome: senderName } });
+    }
+    return existing.id;
+  }
+
+  const passwordHash = await bcrypt.hash(`${randomUUID()}-${Date.now()}`, 10);
+
+  try {
+    const created = await prisma.user.create({
+      data: {
+        nome: senderName,
+        email: normalizedEmail,
+        passwordHash,
+        role: "CONSULTA"
+      },
+      select: { id: true }
+    });
+    return created.id;
+  } catch {
+    const raceResolved = await prisma.user.findUnique({ where: { email: normalizedEmail }, select: { id: true } });
+    return raceResolved?.id ?? fallbackUserId;
+  }
 };
 
 const getHeader = (message: gmail_v1.Schema$Message, headerName: string) => {
@@ -245,10 +419,16 @@ const isAllowedSender = (fromEmail: string) => {
   return domains.includes(domain.toLowerCase());
 };
 
-const makeTicketDescription = (fromEmail: string, subject: string, body: string, receivedAt: Date | null) => {
+const makeTicketDescription = (
+  senderDisplayName: string,
+  fromEmail: string,
+  subject: string,
+  body: string,
+  receivedAt: Date | null
+) => {
   const lines = [
     "Origem: EMAIL",
-    `Remetente: ${fromEmail}`,
+    `Remetente: ${senderDisplayName} <${fromEmail}>`,
     `Assunto: ${subject || "(sem assunto)"}`,
     `Recebido em: ${receivedAt ? receivedAt.toISOString() : "desconhecido"}`,
     "",
@@ -264,12 +444,12 @@ const processMessage = async (
   options?: IngestionRunOptions
 ): Promise<"created" | "ignored" | "error" | "skipped"> => {
   const allowReprocess = options?.reprocessProcessed === true;
-  const already = await prisma.ticketEmailIngestion.findUnique({
-    where: { gmailMessageId: messageId },
-    select: { id: true }
-  });
-  if (already && !allowReprocess) {
-    return "skipped";
+
+  if (!allowReprocess) {
+    const claimed = await tryClaimIngestionRecord(messageId);
+    if (!claimed) {
+      return "skipped";
+    }
   }
 
   try {
@@ -280,9 +460,12 @@ const processMessage = async (
     });
 
     const fromEmail = parseEmailAddress(getHeader(full.data, "From"));
+    const fromHeader = getHeader(full.data, "From");
     const subject = getHeader(full.data, "Subject") ?? "";
     const receivedAt = full.data.internalDate ? new Date(Number(full.data.internalDate)) : null;
     const bodyText = extractTextBody(full.data);
+    const senderDisplayName = await resolveSenderDisplayName(fromHeader, fromEmail, bodyText);
+    const createdByUserId = await resolveCreatorUserIdForSender(fromEmail, senderDisplayName, systemUserId);
     const payloadRaw = JSON.stringify({
       snippet: full.data.snippet,
       headers: full.data.payload?.headers
@@ -308,7 +491,7 @@ const processMessage = async (
       instrumentId = await findInstrumentIdByAI(subject, bodyText);
     }
 
-    let descricao = makeTicketDescription(fromEmail, subject, bodyText, receivedAt);
+    let descricao = makeTicketDescription(senderDisplayName, fromEmail, subject, bodyText, receivedAt);
     let checklistItems: string[] = [];
     if (env.aiTicketSummaryEnabled) {
       const summary = await generateTicketSummary(subject, bodyText, fromEmail);
@@ -334,7 +517,7 @@ const processMessage = async (
         instrumento_informado: instrumentId ? undefined : regexHint ?? undefined
       },
       {
-        createdByUserId: systemUserId,
+        createdByUserId,
         source: TicketSource.EMAIL
       }
     );

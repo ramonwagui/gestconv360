@@ -1,6 +1,7 @@
 import { ChangeEvent, DragEvent, FormEvent, useEffect, useMemo, useRef, useState } from "react";
 
 import {
+  askAssistentePergunta,
   askDocumentQuestion,
   addTicketComment,
   addWorkMeasurementBulletin,
@@ -39,6 +40,23 @@ import {
   getTransferenciasDiscricionariasFiltros,
   getTransferenciasDiscricionariasProponenteSugestoes,
   getTransferenciasDiscricionariasSyncStatus,
+  getConsultaFnsAnos,
+  getConsultaFnsMunicipios,
+  getConsultaFnsPropostaDetalhe,
+  getConsultaFnsPropostas,
+  getConsultaFnsStatus,
+  getConsultaFnsUfs,
+  getFnsEntidades,
+  getFnsMunicipios,
+  getFnsRepasses,
+  getFnsRepassesDetalhe,
+  getFnsSaldosTiposConta,
+  getFnsSyncStatus,
+  getFnsUfs,
+  getSimecMunicipios,
+  getSimecObraDetalhe,
+  getSimecObras,
+  getSimecUfs,
   getTransferenciasEspeciaisPlanoAcao,
   getTicketById,
   getWorkProgress,
@@ -69,6 +87,8 @@ import {
   searchInstrumentos,
   signDocument,
   syncTransferenciasDiscricionarias,
+  syncFnsCache,
+  syncConsultaFnsCache,
   updateUserAdmin,
   updateChecklistItem,
   updateTicket,
@@ -78,6 +98,8 @@ import {
   uploadMyAvatar
 } from "./api";
 import type {
+  AssistenteHistoricoItem,
+  AssistenteResposta,
   AuditAction,
   AuditLogItem,
   ChecklistItem,
@@ -102,6 +124,24 @@ import type {
   TransferenciaDiscricionariaDesembolsoProponenteResponse,
   TransferenciaDiscricionariaProponenteSugestaoItem,
   TransferenciaDiscricionariaResponse,
+  ConsultaFnsAnoItem,
+  ConsultaFnsMunicipioItem,
+  ConsultaFnsPropostaDetalhe,
+  ConsultaFnsPropostaItem,
+  ConsultaFnsPropostasResponse,
+  ConsultaFnsSyncStatus,
+  ConsultaFnsUfItem,
+  FnsEntidadeItem,
+  FnsMunicipioItem,
+  FnsRepassesDetalheResponse,
+  FnsRepassesResponse,
+  FnsSaldosTiposContaResponse,
+  FnsSyncStatus,
+  FnsUfItem,
+  SimecMunicipioItem,
+  SimecObraDetalhe,
+  SimecObrasResponse,
+  SimecUfItem,
   Ticket,
   TicketPriority,
   TicketSource,
@@ -198,6 +238,36 @@ const FLOW_TYPE_LABELS: Record<InstrumentFlowType, string> = {
   EVENTOS: "Eventos"
 };
 
+const BRAZIL_UFS: SimecUfItem[] = [
+  { uf: "AC", sigla: "AC", nome: "Acre" },
+  { uf: "AL", sigla: "AL", nome: "Alagoas" },
+  { uf: "AP", sigla: "AP", nome: "Amapa" },
+  { uf: "AM", sigla: "AM", nome: "Amazonas" },
+  { uf: "BA", sigla: "BA", nome: "Bahia" },
+  { uf: "CE", sigla: "CE", nome: "Ceara" },
+  { uf: "DF", sigla: "DF", nome: "Distrito Federal" },
+  { uf: "ES", sigla: "ES", nome: "Espirito Santo" },
+  { uf: "GO", sigla: "GO", nome: "Goias" },
+  { uf: "MA", sigla: "MA", nome: "Maranhao" },
+  { uf: "MT", sigla: "MT", nome: "Mato Grosso" },
+  { uf: "MS", sigla: "MS", nome: "Mato Grosso do Sul" },
+  { uf: "MG", sigla: "MG", nome: "Minas Gerais" },
+  { uf: "PA", sigla: "PA", nome: "Para" },
+  { uf: "PB", sigla: "PB", nome: "Paraiba" },
+  { uf: "PR", sigla: "PR", nome: "Parana" },
+  { uf: "PE", sigla: "PE", nome: "Pernambuco" },
+  { uf: "PI", sigla: "PI", nome: "Piaui" },
+  { uf: "RJ", sigla: "RJ", nome: "Rio de Janeiro" },
+  { uf: "RN", sigla: "RN", nome: "Rio Grande do Norte" },
+  { uf: "RS", sigla: "RS", nome: "Rio Grande do Sul" },
+  { uf: "RO", sigla: "RO", nome: "Rondonia" },
+  { uf: "RR", sigla: "RR", nome: "Roraima" },
+  { uf: "SC", sigla: "SC", nome: "Santa Catarina" },
+  { uf: "SP", sigla: "SP", nome: "Sao Paulo" },
+  { uf: "SE", sigla: "SE", nome: "Sergipe" },
+  { uf: "TO", sigla: "TO", nome: "Tocantins" }
+];
+
 const WORKFLOW_STAGES: WorkflowStage[] = [
   "PROPOSTA",
   "REQUISITOS_CELEBRACAO",
@@ -276,7 +346,16 @@ const emptyStageFollowUps = (): Record<WorkflowStage, StageFollowUp[]> => ({
   ACOMPANHAMENTO_OBRA: []
 });
 
-type MenuView = "dashboard" | "instrumentos" | "proponentes" | "usuarios" | "auditoria" | "tickets" | "relatorios" | "assinaturas";
+type MenuView =
+  | "dashboard"
+  | "instrumentos"
+  | "proponentes"
+  | "usuarios"
+  | "auditoria"
+  | "tickets"
+  | "assistente"
+  | "relatorios"
+  | "assinaturas";
 type StageFollowUpFilter = "TODOS" | "SO_MEUS" | "COM_ANEXO" | "COM_TEXTO";
 type ReportPdfMode = "executivo" | "analitico";
 
@@ -339,12 +418,43 @@ type TransferenciasDiscricionariasProponenteDesembolsoFilters = {
 
 type TransferenciasDiscricionariasTab = "convenios" | "proponente";
 
+type FnsRepassesFilters = {
+  ano: string;
+  uf_id: string;
+  co_ibge_municipio: string;
+  cnpj: string;
+  codigo_bloco: string;
+};
+
+type ConsultaFnsFilters = {
+  ano: string;
+  uf: string;
+  co_municipio_ibge: string;
+  nu_proposta: string;
+  tp_proposta: string;
+  tp_recurso: string;
+  tp_emenda: string;
+  count: string;
+};
+
+type SimecObrasFilters = {
+  uf: string;
+  muncod: string;
+  esfera: string;
+  tipologia: string;
+  obrid: string;
+  vigencia_status: "" | "vencidas" | "30" | "60" | "90";
+};
+
 type RelatorioTab =
   | "repasses"
   | "obras"
   | "tickets"
   | "transferencias_especiais"
-  | "transferencias_discricionarias";
+  | "transferencias_discricionarias"
+  | "fns_repasses"
+  | "consultafns_propostas"
+  | "simec_obras";
 type TicketBoardTab = "abertos" | "resolvidos" | "cancelados";
 type SignatureTab = "certificados" | "documentos";
 
@@ -375,6 +485,16 @@ type TechnicalHealthState = {
   backendVersion: string;
   reportRouteStatus: TechnicalRouteStatus;
   lastCheckedAt: string | null;
+};
+
+type AssistenteChatItem = {
+  id: number;
+  role: "user" | "assistant";
+  text: string;
+  createdAt: string;
+  intencao?: AssistenteResposta["intencao"];
+  contextoUsado?: boolean;
+  perguntaInterpretada?: string;
 };
 
 const STAGE_FOLLOW_UP_FILTER_LABELS: Record<StageFollowUpFilter, string> = {
@@ -424,6 +544,12 @@ type InstrumentForm = {
 };
 
 const todayDate = () => new Date().toISOString().slice(0, 10);
+
+const formatChatTime = (value: string) =>
+  new Date(value).toLocaleTimeString("pt-BR", {
+    hour: "2-digit",
+    minute: "2-digit"
+  });
 
 const readInstrumentIdFromPath = (pathname: string): number | null => {
   const match = /^\/instrumentos\/(\d+)$/.exec(pathname);
@@ -482,6 +608,43 @@ const formatDateOnlyPtBr = (value: string) => {
   return parsed.toLocaleDateString("pt-BR", { timeZone: "UTC" });
 };
 
+const getDaysUntilDate = (value: string) => {
+  const dueDate = parseDateOnly(value);
+  if (!dueDate) {
+    return null;
+  }
+
+  const now = new Date();
+  const todayUtc = Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate());
+  const dueUtc = Date.UTC(dueDate.getUTCFullYear(), dueDate.getUTCMonth(), dueDate.getUTCDate());
+  return Math.floor((dueUtc - todayUtc) / (1000 * 60 * 60 * 24));
+};
+
+const formatRelativeTimeFromIso = (value: string) => {
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) {
+    return "agora";
+  }
+
+  const diffMs = Date.now() - date.getTime();
+  const diffMinutes = Math.max(0, Math.floor(diffMs / 60000));
+
+  if (diffMinutes < 1) {
+    return "agora";
+  }
+  if (diffMinutes < 60) {
+    return `ha ${diffMinutes} min`;
+  }
+
+  const diffHours = Math.floor(diffMinutes / 60);
+  if (diffHours < 24) {
+    return `ha ${diffHours}h`;
+  }
+
+  const diffDays = Math.floor(diffHours / 24);
+  return `ha ${diffDays}d`;
+};
+
 const formatTicketSla = (ticket: Ticket) => {
   if (!ticket.prazo_alvo) {
     return "Sem prazo";
@@ -536,6 +699,42 @@ const isTicketOverdue = (ticket: Ticket) => {
   const todayUtc = Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate());
   const dueUtc = Date.UTC(dueDate.getUTCFullYear(), dueDate.getUTCMonth(), dueDate.getUTCDate());
   return dueUtc < todayUtc;
+};
+
+const formatTicketInstrumentLabel = (ticket: Ticket, emptyLabel = "Sem instrumento") => {
+  if (ticket.instrumento) {
+    const base = `${ticket.instrumento.instrumento} (proposta ${ticket.instrumento.proposta})`;
+    const objeto = normalizeReadableText(ticket.instrumento.objeto)?.trim();
+    if (objeto) {
+      return `${base} - Objeto: ${objeto}`;
+    }
+    return base;
+  }
+
+  return ticket.instrumento_informado ?? emptyLabel;
+};
+
+const moveUpdatedTicketToTop = (items: Ticket[], updated: Ticket) => {
+  return [updated, ...items.filter((item) => item.id !== updated.id)];
+};
+
+const resolveConsultaFnsNuProposta = (item: ConsultaFnsPropostaItem) => {
+  const direct = (item.nuProposta ?? "").trim();
+  if (direct !== "") {
+    return direct;
+  }
+
+  const fromLinha = item.linhaPropostas?.find((entry) => (entry.nuProposta ?? "").trim() !== "")?.nuProposta;
+  return (fromLinha ?? "").trim();
+};
+
+const escapeHtml = (value: string) => {
+  return value
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/\"/g, "&quot;")
+    .replace(/'/g, "&#039;");
 };
 
 type TicketForm = {
@@ -672,6 +871,36 @@ const emptyTransferenciasDiscricionariasProponenteDesembolsoFilters =
     mes: "",
     page_size: "100"
   });
+
+const emptyFnsRepassesFilters = (): FnsRepassesFilters => ({
+  ano: String(new Date().getFullYear()),
+  uf_id: "",
+  co_ibge_municipio: "",
+  cnpj: "",
+  codigo_bloco: ""
+});
+
+const emptyConsultaFnsFilters = (): ConsultaFnsFilters => ({
+  ano: String(new Date().getFullYear()),
+  uf: "",
+  co_municipio_ibge: "",
+  nu_proposta: "",
+  tp_proposta: "",
+  tp_recurso: "",
+  tp_emenda: "",
+  count: "20"
+});
+
+const emptySimecObrasFilters = (): SimecObrasFilters => ({
+  uf: "",
+  muncod: "",
+  esfera: "",
+  tipologia: "",
+  obrid: "",
+  vigencia_status: ""
+});
+
+const emptyAssistenteConversa = (): AssistenteChatItem[] => [];
 
 const emptyTicketFilters = (): TicketFilters => ({
   status: "",
@@ -924,6 +1153,32 @@ const normalizeReadableText = (value: string | null | undefined) => {
   } catch {
     return value.replace(/[\u0080-\u009F]/g, "");
   }
+};
+
+const normalizeReadableTextSafe = (value: string | null | undefined, fallback = "-") => {
+  const normalized = normalizeReadableText(value);
+  if (normalized === null || normalized === undefined) {
+    return fallback;
+  }
+  const trimmed = normalized.trim();
+  return trimmed === "" ? fallback : trimmed;
+};
+
+const loadIbgeMunicipiosByUf = async (uf: string): Promise<SimecMunicipioItem[]> => {
+  const res = await fetch(`https://servicodados.ibge.gov.br/api/v1/localidades/estados/${encodeURIComponent(uf)}/municipios`);
+  if (!res.ok) {
+    throw new Error(`Falha ao consultar municipios no IBGE (${res.status}).`);
+  }
+
+  const payload = (await res.json()) as Array<{ id?: number; nome?: string }>;
+  return payload
+    .map((item) => ({
+      codigo: String(item.id ?? "").trim(),
+      uf,
+      nome: String(item.nome ?? "").trim()
+    }))
+    .filter((item) => item.codigo !== "" && item.nome !== "")
+    .sort((a, b) => a.nome.localeCompare(b.nome));
 };
 
 const parseConvenioList = (value: string) => {
@@ -1235,7 +1490,7 @@ const exportTicketReportCsv = (items: Ticket[]) => {
       criado_por: item.criado_por.nome,
       responsavel: item.responsavel?.nome ?? "Nao atribuido",
       titulo: item.titulo,
-      instrumento: item.instrumento?.instrumento ?? item.instrumento_informado ?? "Sem instrumento",
+      instrumento: formatTicketInstrumentLabel(item),
       prazo_alvo: item.prazo_alvo ?? "",
       sla: formatTicketSla(item),
       atrasado: isTicketOverdue(item) ? "SIM" : "NAO",
@@ -1261,7 +1516,7 @@ const exportTicketReportExcel = (items: Ticket[]) => {
   const rows = items
     .map(
       (item) =>
-        `<tr><td>${item.codigo}</td><td>${TICKET_STATUS_LABELS[item.status]}</td><td>${TICKET_PRIORITY_LABELS[item.prioridade]}</td><td>${TICKET_SOURCE_LABELS[item.origem]}</td><td>${item.criado_por.nome}</td><td>${item.responsavel?.nome ?? "Nao atribuido"}</td><td>${item.titulo}</td><td>${item.instrumento?.instrumento ?? item.instrumento_informado ?? "Sem instrumento"}</td><td>${item.prazo_alvo ?? ""}</td><td>${formatTicketSla(item)}</td><td>${isTicketOverdue(item) ? "SIM" : "NAO"}</td><td>${new Date(item.created_at).toLocaleString("pt-BR")}</td><td>${new Date(item.updated_at).toLocaleString("pt-BR")}</td><td>${item.resolvido_em ? new Date(item.resolvido_em).toLocaleString("pt-BR") : ""}</td></tr>`
+        `<tr><td>${item.codigo}</td><td>${TICKET_STATUS_LABELS[item.status]}</td><td>${TICKET_PRIORITY_LABELS[item.prioridade]}</td><td>${TICKET_SOURCE_LABELS[item.origem]}</td><td>${item.criado_por.nome}</td><td>${item.responsavel?.nome ?? "Nao atribuido"}</td><td>${item.titulo}</td><td>${formatTicketInstrumentLabel(item)}</td><td>${item.prazo_alvo ?? ""}</td><td>${formatTicketSla(item)}</td><td>${isTicketOverdue(item) ? "SIM" : "NAO"}</td><td>${new Date(item.created_at).toLocaleString("pt-BR")}</td><td>${new Date(item.updated_at).toLocaleString("pt-BR")}</td><td>${item.resolvido_em ? new Date(item.resolvido_em).toLocaleString("pt-BR") : ""}</td></tr>`
     )
     .join("");
 
@@ -1482,6 +1737,9 @@ export default function App() {
   );
   const [menuTransition, setMenuTransition] = useState<"" | "menu-to-tickets" | "menu-from-tickets">("");
   const menuTransitionTimeoutRef = useRef<number | null>(null);
+  const assistenteTypingIntervalRef = useRef<number | null>(null);
+  const assistenteChatLogRef = useRef<HTMLDivElement | null>(null);
+  const [assistenteTypingMessageId, setAssistenteTypingMessageId] = useState<number | null>(null);
 
   const [token, setToken] = useState<string>(() => localStorage.getItem(TOKEN_KEY) ?? "");
   const [user, setUser] = useState<User | null>(() => readStoredUser());
@@ -1561,6 +1819,9 @@ export default function App() {
   const [ticketCommentText, setTicketCommentText] = useState("");
   const [showTicketCreateModal, setShowTicketCreateModal] = useState(false);
   const [ticketAssignableUsers, setTicketAssignableUsers] = useState<Array<{ id: number; nome: string; email: string; role: Role }>>([]);
+  const [assistentePergunta, setAssistentePergunta] = useState("");
+  const [assistenteConversa, setAssistenteConversa] = useState<AssistenteChatItem[]>(() => emptyAssistenteConversa());
+  const [isConsultandoAssistente, setIsConsultandoAssistente] = useState(false);
   const [relatorioTab, setRelatorioTab] = useState<RelatorioTab>("repasses");
   const [reportFilters, setReportFilters] = useState<ReportFilters>(() => emptyReportFilters());
   const [reportData, setReportData] = useState<RepasseReportResponse | null>(null);
@@ -1602,6 +1863,30 @@ export default function App() {
   const [isLoadingTransferenciasDiscricionariasProponenteDesembolsos, setIsLoadingTransferenciasDiscricionariasProponenteDesembolsos] =
     useState(false);
   const [isSyncingTransferenciasDiscricionarias, setIsSyncingTransferenciasDiscricionarias] = useState(false);
+  const [fnsRepassesFilters, setFnsRepassesFilters] = useState<FnsRepassesFilters>(() => emptyFnsRepassesFilters());
+  const [fnsUfs, setFnsUfs] = useState<FnsUfItem[]>([]);
+  const [fnsMunicipios, setFnsMunicipios] = useState<FnsMunicipioItem[]>([]);
+  const [fnsEntidades, setFnsEntidades] = useState<FnsEntidadeItem[]>([]);
+  const [fnsRepassesData, setFnsRepassesData] = useState<FnsRepassesResponse | null>(null);
+  const [fnsRepassesDetalheData, setFnsRepassesDetalheData] = useState<FnsRepassesDetalheResponse | null>(null);
+  const [fnsSaldosData, setFnsSaldosData] = useState<FnsSaldosTiposContaResponse | null>(null);
+  const [fnsSyncStatus, setFnsSyncStatus] = useState<FnsSyncStatus | null>(null);
+  const [fnsDetalheBlocoLabel, setFnsDetalheBlocoLabel] = useState<string>("");
+  const [consultaFnsFilters, setConsultaFnsFilters] = useState<ConsultaFnsFilters>(() => emptyConsultaFnsFilters());
+  const [consultaFnsUfs, setConsultaFnsUfs] = useState<ConsultaFnsUfItem[]>([]);
+  const [consultaFnsAnos, setConsultaFnsAnos] = useState<ConsultaFnsAnoItem[]>([]);
+  const [consultaFnsMunicipios, setConsultaFnsMunicipios] = useState<ConsultaFnsMunicipioItem[]>([]);
+  const [consultaFnsData, setConsultaFnsData] = useState<ConsultaFnsPropostasResponse | null>(null);
+  const [consultaFnsPage, setConsultaFnsPage] = useState(1);
+  const [consultaFnsSelected, setConsultaFnsSelected] = useState<ConsultaFnsPropostaItem | null>(null);
+  const [consultaFnsDetalhe, setConsultaFnsDetalhe] = useState<ConsultaFnsPropostaDetalhe | null>(null);
+  const [consultaFnsSyncStatus, setConsultaFnsSyncStatus] = useState<ConsultaFnsSyncStatus | null>(null);
+  const [simecObrasFilters, setSimecObrasFilters] = useState<SimecObrasFilters>(() => emptySimecObrasFilters());
+  const [simecUfs, setSimecUfs] = useState<SimecUfItem[]>([]);
+  const [simecMunicipios, setSimecMunicipios] = useState<SimecMunicipioItem[]>([]);
+  const [simecObrasData, setSimecObrasData] = useState<SimecObrasResponse | null>(null);
+  const [simecObraDetalhe, setSimecObraDetalhe] = useState<SimecObraDetalhe | null>(null);
+  const [simecObraDetalheId, setSimecObraDetalheId] = useState<number | null>(null);
   const [ticketReportFilters, setTicketReportFilters] = useState<TicketReportFilters>(() => emptyTicketReportFilters());
   const [ticketReportData, setTicketReportData] = useState<Ticket[] | null>(null);
   const [proponenteCadastro, setProponenteCadastro] = useState<ProponenteCadastroState>(() =>
@@ -1736,6 +2021,34 @@ export default function App() {
     const proponenteId = Number(obraReportFilters.proponente_id);
     return obraItems.filter((item) => (item.proponente_id ?? item.convenete_id) === proponenteId);
   }, [obraReportFilters.proponente_id, sortedInstruments]);
+  const filteredSimecObrasItems = useMemo(() => {
+    if (!simecObrasData) {
+      return [] as SimecObrasResponse["itens"];
+    }
+
+    const vigenciaStatus = simecObrasFilters.vigencia_status;
+    if (vigenciaStatus === "") {
+      return simecObrasData.itens;
+    }
+
+    return simecObrasData.itens.filter((item) => {
+      if (!item.vigencia_fim) {
+        return false;
+      }
+
+      const diasParaVencimento = getDaysUntilDate(item.vigencia_fim);
+      if (diasParaVencimento === null) {
+        return false;
+      }
+
+      if (vigenciaStatus === "vencidas") {
+        return diasParaVencimento < 0;
+      }
+
+      const limiteDias = Number(vigenciaStatus);
+      return Number.isFinite(limiteDias) && diasParaVencimento >= 0 && diasParaVencimento <= limiteDias;
+    });
+  }, [simecObrasData, simecObrasFilters.vigencia_status]);
 
   const overviewItemsAtendidos = useMemo(() => {
     const proponenteIds = new Set(proponentes.map((item) => item.id));
@@ -2017,6 +2330,30 @@ export default function App() {
     );
     setTransferenciasDiscricionariasProponenteDesembolsoData(null);
     setTransferenciasDiscricionariasProponenteDesembolsoPage(1);
+    setFnsRepassesFilters(emptyFnsRepassesFilters());
+    setFnsUfs([]);
+    setFnsMunicipios([]);
+    setFnsEntidades([]);
+    setFnsRepassesData(null);
+    setFnsRepassesDetalheData(null);
+    setFnsSaldosData(null);
+    setFnsSyncStatus(null);
+    setFnsDetalheBlocoLabel("");
+    setConsultaFnsFilters(emptyConsultaFnsFilters());
+    setConsultaFnsUfs([]);
+    setConsultaFnsAnos([]);
+    setConsultaFnsMunicipios([]);
+    setConsultaFnsData(null);
+    setConsultaFnsPage(1);
+    setConsultaFnsSelected(null);
+    setConsultaFnsDetalhe(null);
+    setConsultaFnsSyncStatus(null);
+    setSimecObrasFilters(emptySimecObrasFilters());
+    setSimecUfs([]);
+    setSimecMunicipios([]);
+    setSimecObrasData(null);
+    setSimecObraDetalhe(null);
+    setSimecObraDetalheId(null);
     setTicketReportFilters(emptyTicketReportFilters());
     setTicketReportData(null);
     setTicketFilters(emptyTicketFilters());
@@ -2028,6 +2365,9 @@ export default function App() {
     setTicketResolutionReason("");
     setTicketCommentText("");
     setTicketAssignableUsers([]);
+    setAssistentePergunta("");
+    setAssistenteConversa(emptyAssistenteConversa());
+    setIsConsultandoAssistente(false);
     setEditingId(null);
     setShowCreateInstrumentForm(false);
     setForm(emptyInstrumentForm());
@@ -2062,8 +2402,21 @@ export default function App() {
       if (menuTransitionTimeoutRef.current !== null) {
         window.clearTimeout(menuTransitionTimeoutRef.current);
       }
+      if (assistenteTypingIntervalRef.current !== null) {
+        window.clearInterval(assistenteTypingIntervalRef.current);
+      }
     };
   }, []);
+
+  useEffect(() => {
+    if (!assistenteChatLogRef.current) {
+      return;
+    }
+    assistenteChatLogRef.current.scrollTo({
+      top: assistenteChatLogRef.current.scrollHeight,
+      behavior: "smooth"
+    });
+  }, [assistenteConversa, isConsultandoAssistente]);
 
   useEffect(() => {
     localStorage.setItem(TICKET_TAB_KEY, ticketBoardTab);
@@ -2390,6 +2743,285 @@ export default function App() {
 
     setTransferenciasDiscricionariasProponenteDesembolsoData(report);
     setTransferenciasDiscricionariasProponenteDesembolsoPage(report.paginacao.pagina);
+  };
+
+  const loadFnsSyncStatus = async (authToken?: string) => {
+    const currentToken = authToken ?? token;
+    if (!currentToken) {
+      return;
+    }
+
+    const status = await getFnsSyncStatus(currentToken);
+    setFnsSyncStatus(status);
+  };
+
+  const loadFnsUfs = async (authToken?: string) => {
+    const currentToken = authToken ?? token;
+    if (!currentToken) {
+      return;
+    }
+
+    const result = await getFnsUfs(currentToken);
+    setFnsUfs(result.itens);
+  };
+
+  const loadFnsMunicipios = async (ufId: number, authToken?: string) => {
+    const currentToken = authToken ?? token;
+    if (!currentToken) {
+      return;
+    }
+
+    const result = await getFnsMunicipios(currentToken, { uf_id: ufId });
+    setFnsMunicipios(result.itens);
+  };
+
+  const loadFnsEntidades = async (coIbgeMunicipio: number, authToken?: string) => {
+    const currentToken = authToken ?? token;
+    if (!currentToken) {
+      return;
+    }
+
+    const result = await getFnsEntidades(currentToken, { co_ibge_municipio: coIbgeMunicipio });
+    setFnsEntidades(result.itens);
+  };
+
+  const loadFnsRepasses = async (authToken?: string, override?: Partial<FnsRepassesFilters>) => {
+    const currentToken = authToken ?? token;
+    if (!currentToken) {
+      return;
+    }
+
+    const source = override ? { ...fnsRepassesFilters, ...override } : fnsRepassesFilters;
+    const cnpjDigits = source.cnpj.replace(/\D/g, "");
+    const ano = Number(source.ano);
+    if (cnpjDigits.length < 11) {
+      setFnsRepassesData(null);
+      setFnsRepassesDetalheData(null);
+      setFnsSaldosData(null);
+      return;
+    }
+
+    const repasses = await getFnsRepasses(currentToken, {
+      cnpj: cnpjDigits,
+      ano: Number.isFinite(ano) ? ano : undefined
+    });
+    setFnsRepassesData(repasses);
+
+    const saldos = await getFnsSaldosTiposConta(currentToken, { cnpj: cnpjDigits });
+    setFnsSaldosData(saldos);
+
+    const codigoBloco = source.codigo_bloco.trim();
+    if (codigoBloco !== "") {
+      const detalhe = await getFnsRepassesDetalhe(currentToken, {
+        cnpj: cnpjDigits,
+        ano: Number.isFinite(ano) ? ano : undefined,
+        codigo_bloco: codigoBloco
+      });
+      setFnsRepassesDetalheData(detalhe);
+      setFnsDetalheBlocoLabel(codigoBloco);
+    } else {
+      setFnsRepassesDetalheData(null);
+      setFnsDetalheBlocoLabel("");
+    }
+  };
+
+  const loadFnsRepassesDetalheByBloco = async (codigoBloco: string, authToken?: string) => {
+    const currentToken = authToken ?? token;
+    if (!currentToken) {
+      return;
+    }
+
+    const cnpjDigits = fnsRepassesFilters.cnpj.replace(/\D/g, "");
+    if (cnpjDigits.length < 11) {
+      throw new Error("Informe um CNPJ valido para consultar detalhe de repasses.");
+    }
+
+    const ano = Number(fnsRepassesFilters.ano);
+    const detalhe = await getFnsRepassesDetalhe(currentToken, {
+      cnpj: cnpjDigits,
+      ano: Number.isFinite(ano) ? ano : undefined,
+      codigo_bloco: codigoBloco
+    });
+    setFnsRepassesDetalheData(detalhe);
+    setFnsDetalheBlocoLabel(codigoBloco);
+    setFnsRepassesFilters((prev) => ({ ...prev, codigo_bloco: codigoBloco }));
+  };
+
+  const loadConsultaFnsStatus = async (authToken?: string) => {
+    const currentToken = authToken ?? token;
+    if (!currentToken) {
+      return;
+    }
+
+    const status = await getConsultaFnsStatus(currentToken);
+    setConsultaFnsSyncStatus(status);
+  };
+
+  const loadConsultaFnsCatalogos = async (authToken?: string) => {
+    const currentToken = authToken ?? token;
+    if (!currentToken) {
+      return;
+    }
+
+    const [ufsRes, anosRes] = await Promise.all([getConsultaFnsUfs(currentToken), getConsultaFnsAnos(currentToken)]);
+    setConsultaFnsUfs(ufsRes.itens);
+    setConsultaFnsAnos(anosRes.itens);
+  };
+
+  const loadConsultaFnsMunicipios = async (uf: string, authToken?: string) => {
+    const currentToken = authToken ?? token;
+    if (!currentToken) {
+      return;
+    }
+
+    const response = await getConsultaFnsMunicipios(currentToken, { uf });
+    setConsultaFnsMunicipios(response.itens);
+  };
+
+  const loadConsultaFnsPropostas = async (pageOverride?: number, authToken?: string, override?: Partial<ConsultaFnsFilters>) => {
+    const currentToken = authToken ?? token;
+    if (!currentToken) {
+      return;
+    }
+
+    const source = override ? { ...consultaFnsFilters, ...override } : consultaFnsFilters;
+    const ano = Number(source.ano);
+    const count = Number(source.count);
+
+    const result = await getConsultaFnsPropostas(currentToken, {
+      ano: Number.isFinite(ano) ? ano : undefined,
+      uf: source.uf || undefined,
+      co_municipio_ibge: source.co_municipio_ibge || undefined,
+      nu_proposta: source.nu_proposta.trim() || undefined,
+      tp_proposta: source.tp_proposta.trim() || undefined,
+      tp_recurso: source.tp_recurso.trim() || undefined,
+      tp_emenda: source.tp_emenda.trim() || undefined,
+      page: pageOverride ?? consultaFnsPage,
+      count: Number.isFinite(count) && count > 0 ? count : 20
+    });
+
+    let enrichedItems = result.itens;
+    const candidates = result.itens
+      .map((item, index) => ({ item, index, nuProposta: resolveConsultaFnsNuProposta(item) }))
+      .filter((entry) => entry.nuProposta !== "" && (entry.item.parlamentares?.length ?? 0) === 0)
+      .slice(0, Number.isFinite(count) ? Math.min(Math.max(count, 1), 30) : 20);
+
+    if (candidates.length > 0) {
+      const details = await Promise.all(
+        candidates.map(async (entry) => {
+          try {
+            const detalhe = await getConsultaFnsPropostaDetalhe(currentToken, entry.nuProposta);
+            return {
+              index: entry.index,
+              parlamentares: detalhe.parlamentares
+            };
+          } catch {
+            return {
+              index: entry.index,
+              parlamentares: [] as ConsultaFnsPropostaDetalhe["parlamentares"]
+            };
+          }
+        })
+      );
+
+      enrichedItems = result.itens.map((item, index) => {
+        const detail = details.find((entry) => entry.index === index);
+        if (!detail || detail.parlamentares.length === 0) {
+          return item;
+        }
+        return {
+          ...item,
+          parlamentares: detail.parlamentares
+        };
+      });
+    }
+
+    setConsultaFnsData({ ...result, itens: enrichedItems });
+    setConsultaFnsPage(result.paginacao.pagina);
+  };
+
+  const loadConsultaFnsPropostaDetalhe = async (nuProposta: string, authToken?: string) => {
+    const currentToken = authToken ?? token;
+    if (!currentToken) {
+      return;
+    }
+
+    const detalhe = await getConsultaFnsPropostaDetalhe(currentToken, nuProposta);
+    setConsultaFnsDetalhe(detalhe);
+  };
+
+  const loadSimecUfs = async (authToken?: string) => {
+    const currentToken = authToken ?? token;
+    if (!currentToken) {
+      return;
+    }
+
+    try {
+      const result = await getSimecUfs(currentToken);
+      setSimecUfs(result.itens.length > 0 ? result.itens : BRAZIL_UFS);
+    } catch {
+      setSimecUfs(BRAZIL_UFS);
+    }
+  };
+
+  const loadSimecMunicipios = async (uf: string, authToken?: string) => {
+    const currentToken = authToken ?? token;
+    if (!currentToken) {
+      return;
+    }
+
+    try {
+      const result = await getSimecMunicipios(currentToken, { uf });
+      if (result.itens.length > 0) {
+        setSimecMunicipios(result.itens);
+        return;
+      }
+    } catch {
+      // fallback handled below
+    }
+
+    try {
+      const fallback = await loadIbgeMunicipiosByUf(uf);
+      setSimecMunicipios(fallback);
+    } catch {
+      setSimecMunicipios([]);
+    }
+  };
+
+  const loadSimecObras = async (authToken?: string, override?: Partial<SimecObrasFilters>) => {
+    const currentToken = authToken ?? token;
+    if (!currentToken) {
+      return;
+    }
+
+    const source = override ? { ...simecObrasFilters, ...override } : simecObrasFilters;
+    const uf = source.uf.trim().toUpperCase();
+    const muncod = source.muncod.trim();
+
+    if (uf.length !== 2 || muncod.length < 6) {
+      setSimecObrasData(null);
+      return;
+    }
+
+    const result = await getSimecObras(currentToken, {
+      uf,
+      muncod,
+      esfera: source.esfera.trim() || undefined,
+      tipologia: source.tipologia.trim() || undefined,
+      obrid: source.obrid.trim() || undefined
+    });
+    setSimecObrasData(result);
+  };
+
+  const loadSimecObraDetalhe = async (obraId: number, authToken?: string) => {
+    const currentToken = authToken ?? token;
+    if (!currentToken) {
+      return;
+    }
+
+    const result = await getSimecObraDetalhe(currentToken, obraId);
+    setSimecObraDetalhe(result);
+    setSimecObraDetalheId(obraId);
   };
 
   const loadManagedUsers = async (authToken?: string) => {
@@ -2770,6 +3402,101 @@ export default function App() {
 
     void loadTransferenciasDiscricionariasFiltros();
   }, [activeView, isAuthenticated, relatorioTab, transferenciasDiscricionariasFiltros]);
+
+  useEffect(() => {
+    if (!isAuthenticated || activeView !== "relatorios" || relatorioTab !== "fns_repasses") {
+      return;
+    }
+
+    if (fnsUfs.length === 0) {
+      void loadFnsUfs();
+    }
+    if (!fnsSyncStatus) {
+      void loadFnsSyncStatus();
+    }
+  }, [activeView, isAuthenticated, relatorioTab, fnsUfs.length, fnsSyncStatus]);
+
+  useEffect(() => {
+    if (!isAuthenticated || activeView !== "relatorios" || relatorioTab !== "fns_repasses") {
+      return;
+    }
+
+    const ufId = Number(fnsRepassesFilters.uf_id);
+    if (!Number.isFinite(ufId) || ufId < 11) {
+      setFnsMunicipios([]);
+      setFnsEntidades([]);
+      return;
+    }
+
+    void loadFnsMunicipios(ufId);
+  }, [activeView, isAuthenticated, relatorioTab, fnsRepassesFilters.uf_id]);
+
+  useEffect(() => {
+    if (!isAuthenticated || activeView !== "relatorios" || relatorioTab !== "fns_repasses") {
+      return;
+    }
+
+    const municipio = Number(fnsRepassesFilters.co_ibge_municipio);
+    if (!Number.isFinite(municipio) || municipio < 100000) {
+      setFnsEntidades([]);
+      return;
+    }
+
+    void loadFnsEntidades(municipio);
+  }, [activeView, isAuthenticated, relatorioTab, fnsRepassesFilters.co_ibge_municipio]);
+
+  useEffect(() => {
+    if (!isAuthenticated || activeView !== "relatorios" || relatorioTab !== "consultafns_propostas") {
+      return;
+    }
+
+    if (consultaFnsUfs.length === 0 || consultaFnsAnos.length === 0) {
+      void loadConsultaFnsCatalogos();
+    }
+    if (!consultaFnsSyncStatus) {
+      void loadConsultaFnsStatus();
+    }
+  }, [activeView, isAuthenticated, relatorioTab, consultaFnsUfs.length, consultaFnsAnos.length, consultaFnsSyncStatus]);
+
+  useEffect(() => {
+    if (!isAuthenticated || activeView !== "relatorios" || relatorioTab !== "consultafns_propostas") {
+      return;
+    }
+
+    const uf = consultaFnsFilters.uf.trim().toUpperCase();
+    if (uf.length !== 2) {
+      setConsultaFnsMunicipios([]);
+      setConsultaFnsFilters((prev) => (prev.co_municipio_ibge === "" ? prev : { ...prev, co_municipio_ibge: "" }));
+      return;
+    }
+
+    void loadConsultaFnsMunicipios(uf);
+  }, [activeView, isAuthenticated, relatorioTab, consultaFnsFilters.uf]);
+
+  useEffect(() => {
+    if (!isAuthenticated || activeView !== "relatorios" || relatorioTab !== "simec_obras") {
+      return;
+    }
+
+    if (simecUfs.length === 0) {
+      void loadSimecUfs();
+    }
+  }, [activeView, isAuthenticated, relatorioTab, simecUfs.length]);
+
+  useEffect(() => {
+    if (!isAuthenticated || activeView !== "relatorios" || relatorioTab !== "simec_obras") {
+      return;
+    }
+
+    const uf = simecObrasFilters.uf.trim().toUpperCase();
+    if (uf.length !== 2) {
+      setSimecMunicipios([]);
+      setSimecObrasFilters((prev) => (prev.muncod === "" ? prev : { ...prev, muncod: "" }));
+      return;
+    }
+
+    void loadSimecMunicipios(uf);
+  }, [activeView, isAuthenticated, relatorioTab, simecObrasFilters.uf]);
 
   useEffect(() => {
     if (!isAuthenticated || activeView !== "relatorios" || relatorioTab !== "transferencias_discricionarias") {
@@ -3548,6 +4275,417 @@ export default function App() {
     }
   };
 
+  const onApplyFnsRepassesFilters = async () => {
+    if (!token) {
+      return;
+    }
+
+    const cnpjDigits = fnsRepassesFilters.cnpj.replace(/\D/g, "");
+    if (cnpjDigits.length < 11) {
+      setMessage("Informe um CNPJ valido para consultar repasses FNS.");
+      return;
+    }
+
+    setIsBusy(true);
+    setMessage("");
+    try {
+      await loadFnsRepasses(token);
+      await loadFnsSyncStatus(token);
+      setMessage("Relatorio de repasses FNS atualizado com sucesso.");
+    } catch (error) {
+      setMessage(error instanceof Error ? error.message : "Falha ao consultar repasses FNS.");
+    } finally {
+      setIsBusy(false);
+    }
+  };
+
+  const onLoadFnsDetalheBloco = async (codigoBloco: string, nomeBloco?: string) => {
+    if (!token) {
+      return;
+    }
+
+    setIsBusy(true);
+    setMessage("");
+    try {
+      await loadFnsRepassesDetalheByBloco(codigoBloco, token);
+      setMessage(`Detalhe do bloco ${nomeBloco ?? codigoBloco} carregado.`);
+    } catch (error) {
+      setMessage(error instanceof Error ? error.message : "Falha ao consultar detalhe de repasses FNS.");
+    } finally {
+      setIsBusy(false);
+    }
+  };
+
+  const onSyncFnsCache = async () => {
+    if (!token || !canManageInstruments) {
+      return;
+    }
+
+    const cnpjDigits = fnsRepassesFilters.cnpj.replace(/\D/g, "");
+    const cnpjs = cnpjDigits.length >= 11 ? [cnpjDigits] : [];
+    const ano = Number(fnsRepassesFilters.ano);
+
+    setIsBusy(true);
+    setMessage("");
+    try {
+      const result = await syncFnsCache(token, {
+        ano: Number.isFinite(ano) ? ano : undefined,
+        cnpjs,
+        incluir_ufs: true
+      });
+      await loadFnsSyncStatus(token);
+      setMessage(
+        result.status === "running"
+          ? "Sincronizacao FNS ja estava em andamento."
+          : "Sincronizacao de cache FNS concluida."
+      );
+    } catch (error) {
+      setMessage(error instanceof Error ? error.message : "Falha ao sincronizar cache FNS.");
+    } finally {
+      setIsBusy(false);
+    }
+  };
+
+  const onClearFnsRepassesFilters = () => {
+    setFnsRepassesFilters(emptyFnsRepassesFilters());
+    setFnsMunicipios([]);
+    setFnsEntidades([]);
+    setFnsRepassesData(null);
+    setFnsRepassesDetalheData(null);
+    setFnsSaldosData(null);
+    setFnsDetalheBlocoLabel("");
+  };
+
+  const onApplyConsultaFnsFilters = async (nextPage = 1) => {
+    if (!token) {
+      return;
+    }
+
+    setIsBusy(true);
+    setMessage("");
+    try {
+      await loadConsultaFnsPropostas(nextPage, token);
+      setMessage("Relatorio Consulta FNS atualizado com sucesso.");
+    } catch (error) {
+      setMessage(error instanceof Error ? error.message : "Falha ao consultar propostas no Consulta FNS.");
+    } finally {
+      setIsBusy(false);
+    }
+  };
+
+  const onOpenConsultaFnsDetalhe = async (item: ConsultaFnsPropostaItem) => {
+    if (!token) {
+      return;
+    }
+
+    const nuPropostaResolved = resolveConsultaFnsNuProposta(item);
+
+    if (nuPropostaResolved === "") {
+      const nextFilters: ConsultaFnsFilters = {
+        ...consultaFnsFilters,
+        nu_proposta: "",
+        tp_proposta: item.coTipoProposta ?? "",
+        tp_recurso: item.dsTipoRecurso ?? ""
+      };
+
+      setConsultaFnsFilters(nextFilters);
+      setConsultaFnsDetalhe(null);
+      setConsultaFnsSelected(null);
+      setIsBusy(true);
+      setMessage("");
+      try {
+        await loadConsultaFnsPropostas(1, token, nextFilters);
+        setMessage("Lista refinada por tipo de proposta e recurso para localizar numeros de proposta.");
+      } catch (error) {
+        setMessage(error instanceof Error ? error.message : "Falha ao refinar lista de propostas.");
+      } finally {
+        setIsBusy(false);
+      }
+      return;
+    }
+
+    setConsultaFnsSelected(item);
+    setIsBusy(true);
+    setMessage("");
+    try {
+      await loadConsultaFnsPropostaDetalhe(nuPropostaResolved, token);
+      setMessage(`Detalhe da proposta ${nuPropostaResolved} carregado.`);
+    } catch (error) {
+      setMessage(error instanceof Error ? error.message : "Falha ao carregar detalhe da proposta.");
+    } finally {
+      setIsBusy(false);
+    }
+  };
+
+  const onClearConsultaFnsFilters = () => {
+    setConsultaFnsFilters(emptyConsultaFnsFilters());
+    setConsultaFnsMunicipios([]);
+    setConsultaFnsData(null);
+    setConsultaFnsPage(1);
+    setConsultaFnsSelected(null);
+    setConsultaFnsDetalhe(null);
+  };
+
+  const onResetConsultaFnsToSearchStart = () => {
+    setConsultaFnsFilters(emptyConsultaFnsFilters());
+    setConsultaFnsMunicipios([]);
+    setConsultaFnsData(null);
+    setConsultaFnsPage(1);
+    setConsultaFnsSelected(null);
+    setConsultaFnsDetalhe(null);
+    setMessage("Retornou ao inicio das buscas Consulta FNS.");
+  };
+
+  const onExportConsultaFnsAnalitico = () => {
+    if (!consultaFnsData || consultaFnsData.itens.length === 0) {
+      setMessage("Consulte propostas antes de gerar o relatorio analitico.");
+      return;
+    }
+
+    const rows = consultaFnsData.itens
+      .map((item) => {
+        const parlamentar = item.parlamentares?.[0];
+        const tipoLinha = resolveConsultaFnsNuProposta(item) !== "" ? "Detalhavel" : "Agregada";
+        return `<tr>
+          <td>${escapeHtml(tipoLinha)}</td>
+          <td>${escapeHtml(item.coTipoProposta ?? "-")}</td>
+          <td>${escapeHtml(item.dsTipoRecurso ?? "-")}</td>
+          <td>${escapeHtml(resolveConsultaFnsNuProposta(item) || "-")}</td>
+          <td>${escapeHtml(item.noEntidade ?? "-")}</td>
+          <td>${formatCurrency(item.vlProposta)}</td>
+          <td>${formatCurrency(item.vlPago)}</td>
+          <td>${formatCurrency(item.vlPagar)}</td>
+          <td>${escapeHtml(parlamentar?.noApelidoPolitico ?? "-")}</td>
+          <td>${escapeHtml(parlamentar?.sgPartido ?? "-")}</td>
+          <td>${escapeHtml(parlamentar?.coEmendaPolitica ?? "-")}</td>
+          <td>${escapeHtml(parlamentar?.nuAnoExercicio ?? "-")}</td>
+          <td>${parlamentar?.vlIndObjeto == null ? "-" : formatCurrency(Number(parlamentar.vlIndObjeto))}</td>
+        </tr>`;
+      })
+      .join("");
+
+    const detalheHtml =
+      consultaFnsDetalhe
+        ? `<h2>Detalhe selecionado</h2>
+          <p><strong>Proposta:</strong> ${escapeHtml(consultaFnsSelected?.nuProposta ?? consultaFnsDetalhe.nuProposta)}</p>
+          <p><strong>Entidade:</strong> ${escapeHtml(consultaFnsDetalhe.noEntidade)} | <strong>Municipio/UF:</strong> ${escapeHtml(consultaFnsDetalhe.noMunicipio)}/${escapeHtml(consultaFnsDetalhe.sgUf)}</p>
+          <p><strong>Situacao:</strong> ${escapeHtml(consultaFnsDetalhe.situacao?.descricaoSituacaoproposta ?? "Nao informada")}</p>
+          <p><strong>Valor proposta:</strong> ${formatCurrency(consultaFnsDetalhe.vlProposta)} | <strong>Pago:</strong> ${formatCurrency(consultaFnsDetalhe.vlPago)} | <strong>Saldo:</strong> ${formatCurrency(consultaFnsDetalhe.vlPagar)}</p>`
+        : "";
+
+    const logoUrl = getReportLogoUrl();
+    const html = `<!doctype html><html><head><meta charset="utf-8" /><title>Consulta FNS - Relatorio analitico</title><style>body{font-family:Segoe UI,Arial,sans-serif;padding:20px;color:#102a43}.report-head{display:flex;align-items:center;justify-content:space-between;gap:12px;margin-bottom:14px}.report-head img{max-width:180px;height:auto;display:block}h1,h2{margin:0 0 10px}table{width:100%;border-collapse:collapse;margin-top:10px}th,td{border:1px solid #cbd5e1;padding:6px;font-size:11px;text-align:left;vertical-align:top}.muted{color:#486581}.toolbar{margin:12px 0 16px}.toolbar button{padding:8px 12px;border:1px solid #9fb3c8;background:#e7eff7;color:#102a43;border-radius:6px;cursor:pointer}</style></head><body><div class="report-head"><img src="${logoUrl}" alt="NC Convenios" /><h1>Consulta FNS - Relatorio analitico</h1></div><p class="muted">Gerado em ${new Date().toLocaleString("pt-BR")}</p><div class="toolbar"><button onclick="window.print()">Imprimir / Salvar PDF</button></div><table><thead><tr><th>Tipo linha</th><th>Tipo proposta</th><th>Tipo recurso</th><th>N° proposta</th><th>Entidade</th><th>Valor</th><th>Valor pago</th><th>Saldo</th><th>Parlamentar</th><th>Partido</th><th>Emenda</th><th>Ano</th><th>Valor emenda</th></tr></thead><tbody>${rows || '<tr><td colspan="13">Sem dados para exportacao</td></tr>'}</tbody></table>${detalheHtml}</body></html>`;
+
+    const blob = new Blob([html], { type: "text/html;charset=utf-8" });
+    const blobUrl = URL.createObjectURL(blob);
+    const popup = window.open(blobUrl, "_blank", "width=1200,height=900");
+    if (!popup) {
+      URL.revokeObjectURL(blobUrl);
+      setMessage("Nao foi possivel abrir o relatorio. Verifique o bloqueador de pop-ups.");
+      return;
+    }
+
+    window.setTimeout(() => {
+      URL.revokeObjectURL(blobUrl);
+    }, 60000);
+  };
+
+  const onSyncConsultaFnsCache = async () => {
+    if (!token || !canManageInstruments) {
+      return;
+    }
+
+    const ano = Number(consultaFnsFilters.ano);
+    const count = Number(consultaFnsFilters.count);
+
+    setIsBusy(true);
+    setMessage("");
+    try {
+      const result = await syncConsultaFnsCache(token, {
+        ano: Number.isFinite(ano) ? ano : undefined,
+        pages_max: 3,
+        count: Number.isFinite(count) ? count : 20
+      });
+      await loadConsultaFnsStatus(token);
+      setMessage(
+        result.status === "running"
+          ? "Sincronizacao Consulta FNS ja estava em andamento."
+          : "Sincronizacao de cache Consulta FNS concluida."
+      );
+    } catch (error) {
+      setMessage(error instanceof Error ? error.message : "Falha ao sincronizar cache Consulta FNS.");
+    } finally {
+      setIsBusy(false);
+    }
+  };
+
+  const onCloseConsultaFnsDetalhe = () => {
+    setConsultaFnsSelected(null);
+    setConsultaFnsDetalhe(null);
+    setMessage("Retornou para a lista de propostas Consulta FNS.");
+  };
+
+  const onApplySimecObrasFilters = async () => {
+    if (!token) {
+      return;
+    }
+
+    const uf = simecObrasFilters.uf.trim().toUpperCase();
+    const muncod = simecObrasFilters.muncod.trim();
+    if (uf.length !== 2 || muncod.length < 6) {
+      setMessage("Selecione UF e municipio para consultar obras no SIMEC.");
+      return;
+    }
+
+    setIsBusy(true);
+    setMessage("");
+    try {
+      await loadSimecObras(token, { uf });
+      setMessage("Relatorio SIMEC Obras atualizado com sucesso.");
+    } catch (error) {
+      setMessage(error instanceof Error ? error.message : "Falha ao consultar obras no SIMEC.");
+    } finally {
+      setIsBusy(false);
+    }
+  };
+
+  const onOpenSimecObraDetalhe = async (obraId: number) => {
+    if (!token) {
+      return;
+    }
+
+    setIsBusy(true);
+    setMessage("");
+    try {
+      await loadSimecObraDetalhe(obraId, token);
+      setMessage(`Detalhe da obra ${obraId} carregado.`);
+    } catch (error) {
+      setMessage(error instanceof Error ? error.message : "Falha ao carregar detalhe da obra SIMEC.");
+    } finally {
+      setIsBusy(false);
+    }
+  };
+
+  const onCloseSimecObraDetalhe = () => {
+    setSimecObraDetalhe(null);
+    setSimecObraDetalheId(null);
+    setMessage("Retornou para a lista de obras do SIMEC.");
+  };
+
+  const onClearSimecObrasFilters = () => {
+    setSimecObrasFilters(emptySimecObrasFilters());
+    setSimecMunicipios([]);
+    setSimecObrasData(null);
+    setSimecObraDetalhe(null);
+    setSimecObraDetalheId(null);
+  };
+
+  const typeAssistantMessage = async (payload: {
+    text: string;
+    intencao?: AssistenteResposta["intencao"];
+    contextoUsado?: boolean;
+    perguntaInterpretada?: string;
+  }) => {
+    const messageId = Date.now() + Math.floor(Math.random() * 1000);
+    const fullText = payload.text?.trim() ?? "";
+    const safeText = fullText === "" ? "Sem resposta no momento." : fullText;
+    setAssistenteTypingMessageId(messageId);
+
+    setAssistenteConversa((prev) => [
+      ...prev,
+      {
+        id: messageId,
+        role: "assistant",
+        text: "",
+        createdAt: new Date().toISOString(),
+        intencao: payload.intencao,
+        contextoUsado: payload.contextoUsado,
+        perguntaInterpretada: payload.perguntaInterpretada
+      }
+    ]);
+
+    await new Promise<void>((resolve) => {
+      let cursor = 0;
+      const stride = safeText.length > 240 ? 3 : 2;
+      const delayMs = safeText.length > 240 ? 12 : 18;
+
+      if (assistenteTypingIntervalRef.current !== null) {
+        window.clearInterval(assistenteTypingIntervalRef.current);
+      }
+
+      assistenteTypingIntervalRef.current = window.setInterval(() => {
+        cursor = Math.min(safeText.length, cursor + stride);
+        const partial = safeText.slice(0, cursor);
+        setAssistenteConversa((prev) =>
+          prev.map((item) =>
+            item.id === messageId
+              ? {
+                  ...item,
+                  text: partial
+                }
+              : item
+          )
+        );
+
+        if (cursor >= safeText.length) {
+          if (assistenteTypingIntervalRef.current !== null) {
+            window.clearInterval(assistenteTypingIntervalRef.current);
+            assistenteTypingIntervalRef.current = null;
+          }
+          setAssistenteTypingMessageId(null);
+          resolve();
+        }
+      }, delayMs);
+    });
+  };
+
+  const onAskAssistente = async () => {
+    if (!token) {
+      return;
+    }
+
+    const pergunta = assistentePergunta.trim();
+    if (pergunta === "") {
+      setMessage("Digite uma pergunta para o Assistente 360.");
+      return;
+    }
+
+    const userMessage: AssistenteChatItem = {
+      id: Date.now(),
+      role: "user",
+      text: pergunta,
+      createdAt: new Date().toISOString()
+    };
+
+    setAssistenteConversa((prev) => [...prev, userMessage]);
+    setAssistentePergunta("");
+    setIsConsultandoAssistente(true);
+    setMessage("");
+
+    try {
+      const historico: AssistenteHistoricoItem[] = assistenteConversa
+        .filter((item) => item.text.trim() !== "")
+        .slice(-10)
+        .map((item) => ({ role: item.role, text: item.text }));
+
+      const result = await askAssistentePergunta(token, pergunta, historico);
+      await typeAssistantMessage({
+        text: result.resposta,
+        intencao: result.intencao,
+        contextoUsado: result.contexto_usado,
+        perguntaInterpretada: result.pergunta_interpretada
+      });
+    } catch (error) {
+      await typeAssistantMessage({
+        text: error instanceof Error ? error.message : "Falha ao consultar o Assistente 360.",
+        intencao: "nao_entendida"
+      });
+    } finally {
+      setIsConsultandoAssistente(false);
+      setAssistenteTypingMessageId(null);
+    }
+  };
+
   const onApplyTicketReportFilters = async () => {
     if (!token) {
       return;
@@ -4308,7 +5446,7 @@ export default function App() {
         status,
         motivo_resolucao: status === "RESOLVIDO" ? ticketResolutionReason.trim() : undefined
       });
-      setTickets((prev) => prev.map((item) => (item.id === id ? updated : item)));
+      setTickets((prev) => moveUpdatedTicketToTop(prev, updated));
       if (selectedTicket?.id === id) {
         setSelectedTicket(updated);
         if (status !== "RESOLVIDO") {
@@ -4339,7 +5477,7 @@ export default function App() {
     setMessage("");
     try {
       const updated = await updateTicket(token, id, { prioridade });
-      setTickets((prev) => prev.map((item) => (item.id === id ? updated : item)));
+      setTickets((prev) => moveUpdatedTicketToTop(prev, updated));
       if (selectedTicket?.id === id) {
         setSelectedTicket(updated);
       }
@@ -4360,7 +5498,7 @@ export default function App() {
     setMessage("");
     try {
       const updated = await updateTicket(token, id, { prazo_alvo: prazoAlvo.trim() === "" ? null : prazoAlvo });
-      setTickets((prev) => prev.map((item) => (item.id === id ? updated : item)));
+      setTickets((prev) => moveUpdatedTicketToTop(prev, updated));
       if (selectedTicket?.id === id) {
         setSelectedTicket(updated);
       }
@@ -4383,7 +5521,7 @@ export default function App() {
       const updated = await updateTicket(token, id, {
         responsavel_user_id: responsavelUserId.trim() === "" ? null : Number(responsavelUserId)
       });
-      setTickets((prev) => prev.map((item) => (item.id === id ? updated : item)));
+      setTickets((prev) => moveUpdatedTicketToTop(prev, updated));
       if (selectedTicket?.id === id) {
         setSelectedTicket(updated);
       }
@@ -4410,7 +5548,7 @@ export default function App() {
     try {
       const updated = await addTicketComment(token, selectedTicket.id, ticketCommentText.trim());
       setSelectedTicket(updated);
-      setTickets((prev) => prev.map((item) => (item.id === updated.id ? updated : item)));
+      setTickets((prev) => moveUpdatedTicketToTop(prev, updated));
       setTicketCommentText("");
       setMessage("Comentario registrado no ticket.");
     } catch (error) {
@@ -4431,7 +5569,7 @@ export default function App() {
       const { toggleTicketChecklistItem: toggleFn } = await import("./api");
       const updated = await toggleFn(token, ticketId, itemId, concluido);
       setSelectedTicket(updated);
-      setTickets((prev) => prev.map((item) => (item.id === updated.id ? updated : item)));
+      setTickets((prev) => moveUpdatedTicketToTop(prev, updated));
       setMessage(concluido ? "Item marcado como concluido." : "Item marcado como pendente.");
     } catch (error) {
       setMessage(error instanceof Error ? error.message : "Falha ao atualizar checklist do ticket.");
@@ -4966,6 +6104,7 @@ export default function App() {
     try {
       const result = await associateTicketInstrument(token, selectedTicket.id, instrumentId);
       setSelectedTicket(result.ticket);
+      setTickets((prev) => moveUpdatedTicketToTop(prev, result.ticket));
       setTicketInstrumentSearch("");
       setTicketInstrumentResults([]);
       setMessage("Instrumento associado com sucesso.");
@@ -5361,6 +6500,13 @@ export default function App() {
           </button>
           <button
             type="button"
+            className={activeView === "assistente" ? "menu-item active" : "menu-item"}
+            onClick={() => onChangeView("assistente")}
+          >
+            Assistente 360
+          </button>
+          <button
+            type="button"
             className={activeView === "relatorios" ? "menu-item active" : "menu-item"}
             onClick={() => onChangeView("relatorios")}
           >
@@ -5423,6 +6569,8 @@ export default function App() {
                       ? signatureTab === "documentos"
                         ? "Documentos Inteligentes"
                         : "Certificados Digitais"
+                      : activeView === "assistente"
+                        ? "Assistente 360"
                       : "Relatorios Analiticos"}
               </h2>
               <p className="subtitle">
@@ -6101,9 +7249,7 @@ export default function App() {
                               <div className="ticket-modal-body">
                                 <p>
                                   <strong>Instrumento:</strong>{" "}
-                                  {selectedTicket.instrumento
-                                    ? `${selectedTicket.instrumento.instrumento} (proposta ${selectedTicket.instrumento.proposta})`
-                                    : selectedTicket.instrumento_informado ?? "Nao informado"}
+                                  {formatTicketInstrumentLabel(selectedTicket, "Nao informado")}
                                 </p>
                                 <p>
                                   <strong>Responsavel:</strong> {selectedTicket.responsavel?.nome ?? "Nao atribuido"}
@@ -7371,12 +8517,17 @@ export default function App() {
                                         {item.codigo}
                                       </button>
                                     </td>
-                                    <td>{new Date(item.updated_at).toLocaleString("pt-BR")}</td>
+                                    <td>
+                                      <div className="ticket-row-subject">
+                                        <strong>{new Date(item.updated_at).toLocaleString("pt-BR")}</strong>
+                                        <span>{formatRelativeTimeFromIso(item.updated_at)}</span>
+                                      </div>
+                                    </td>
                                     <td>{item.criado_por.nome}</td>
                                     <td>
                                       <div className="ticket-row-subject">
                                         <strong>{item.titulo}</strong>
-                                        <span>{item.instrumento?.instrumento ?? item.instrumento_informado ?? "Sem instrumento"}</span>
+                                        <span>{formatTicketInstrumentLabel(item)}</span>
                                       </div>
                                     </td>
                                     <td>
@@ -7438,9 +8589,7 @@ export default function App() {
                         )}
                         <p>
                           <strong>Instrumento:</strong>{" "}
-                          {selectedTicket.instrumento
-                            ? `${selectedTicket.instrumento.instrumento} (proposta ${selectedTicket.instrumento.proposta})`
-                            : selectedTicket.instrumento_informado ?? "Nao informado"}
+                          {formatTicketInstrumentLabel(selectedTicket, "Nao informado")}
                         </p>
                         {!selectedTicket.instrumento && canManageInstruments && (
                           <div className="ticket-instrument-associate">
@@ -8059,8 +9208,10 @@ export default function App() {
                               return (
                                 <tr key={requestItem.id}>
                                   <td>
-                                    <p>{requestItem.titulo}</p>
-                                    {requestItem.descricao ? <p className="subtitle">{requestItem.descricao}</p> : null}
+                                    <p>{normalizeReadableTextSafe(requestItem.titulo)}</p>
+                                    {requestItem.descricao ? (
+                                      <p className="subtitle">{normalizeReadableTextSafe(requestItem.descricao)}</p>
+                                    ) : null}
                                   </td>
                                   <td>
                                     <span className={`status-chip ${requestItem.status.toLowerCase()}`}>
@@ -8072,7 +9223,9 @@ export default function App() {
                                   <td>
                                     <p>{requestItem.total_documentos}</p>
                                     {requestItem.documentos.length > 0 ? (
-                                      <p className="subtitle">Ultimo: {requestItem.documentos[0].arquivoNome}</p>
+                                      <p className="subtitle">
+                                        Ultimo: {normalizeReadableTextSafe(requestItem.documentos[0].arquivoNome)}
+                                      </p>
                                     ) : null}
                                   </td>
                                   <td>
@@ -8253,14 +9406,14 @@ export default function App() {
                           <tbody>
                             {documentSearchResults.map((result) => (
                               <tr key={`search-${result.id}`}>
-                                <td>{result.titulo}</td>
-                                <td>{result.snippet}</td>
+                                <td>{normalizeReadableTextSafe(result.titulo)}</td>
+                                <td>{normalizeReadableTextSafe(result.snippet)}</td>
                                 <td>{result.searchType === "semantic" ? "Semantica" : "Lexical"}</td>
                                 <td>{result.score}</td>
                                 <td>{DOCUMENT_INDEX_STATUS_LABELS[result.indexStatus]}</td>
                                 <td>{result.aiCategory ? DOCUMENT_AI_CATEGORY_LABELS[result.aiCategory] : "-"}</td>
                                 <td>{result.aiRiskLevel ? DOCUMENT_AI_RISK_LABELS[result.aiRiskLevel] : "-"}</td>
-                                <td>{result.aiSummary ?? "-"}</td>
+                                <td>{normalizeReadableTextSafe(result.aiSummary)}</td>
                                 <td>
                                   <button
                                     type="button"
@@ -8299,8 +9452,8 @@ export default function App() {
                           <tbody>
                             {documents.map((doc) => (
                               <tr key={doc.id}>
-                                <td>{doc.titulo}</td>
-                                <td>{doc.arquivoNome}</td>
+                                <td>{normalizeReadableTextSafe(doc.titulo)}</td>
+                                <td>{normalizeReadableTextSafe(doc.arquivoNome)}</td>
                                 <td>
                                   <span className={`status-chip ${doc.status.toLowerCase()}`}>
                                     {doc.status === "PENDENTE" ? "Pendente" : doc.status === "ASSINADO" ? "Assinado" : "Cancelado"}
@@ -8321,7 +9474,9 @@ export default function App() {
                                       ? `Risco ${DOCUMENT_AI_RISK_LABELS[doc.aiRiskLevel as "BAIXO" | "MEDIO" | "ALTO" | "CRITICO"]}${typeof doc.aiClassificationConfidence === "number" ? ` (${Math.round(doc.aiClassificationConfidence * 100)}%)` : ""}`
                                       : "-"}
                                   </p>
-                                  {doc.aiInsights ? <p className="subtitle">{doc.aiInsights}</p> : null}
+                                  {doc.aiInsights ? (
+                                    <p className="subtitle">{normalizeReadableTextSafe(doc.aiInsights)}</p>
+                                  ) : null}
                                 </td>
                                 <td>{new Date(doc.createdAt).toLocaleString("pt-BR")}</td>
                                 <td>
@@ -8356,7 +9511,7 @@ export default function App() {
                                   <button
                                     type="button"
                                     className="ghost"
-                                    onClick={() => onOpenDocumentQa(doc.id, doc.titulo)}
+                                    onClick={() => onOpenDocumentQa(doc.id, normalizeReadableTextSafe(doc.titulo, doc.titulo))}
                                   >
                                     Perguntar IA
                                   </button>
@@ -8472,6 +9627,104 @@ export default function App() {
                 </div>
               )}
             </section>
+          ) : activeView === "assistente" ? (
+            <section className="dashboard">
+              <div className="card">
+                <h3>Assistente 360</h3>
+                <p className="subtitle">
+                  Chat operacional do Gestconv360 para consultas em linguagem natural sobre dados internos.
+                </p>
+              </div>
+
+              <div className="card table-card">
+                <h3>Conversa</h3>
+                <div className="assistant-chat-log" ref={assistenteChatLogRef}>
+                  {assistenteConversa.map((item) => (
+                    <article
+                      key={item.id}
+                      className={`assistant-chat-message ${item.role === "assistant" ? "assistant" : "user"}`}
+                    >
+                      <div className={`assistant-chat-meta ${item.role === "assistant" ? "assistant" : "user"}`}>
+                        <span className="assistant-chat-avatar" aria-hidden="true">
+                          {item.role === "assistant" ? "🤖" : "👤"}
+                        </span>
+                        <p className="eyebrow">{item.role === "assistant" ? "Assistente 360" : "Voce"}</p>
+                        {item.role === "assistant" && item.contextoUsado ? (
+                          <span
+                            className="assistant-context-badge"
+                            title={
+                              item.perguntaInterpretada
+                                ? `Pergunta interpretada: ${item.perguntaInterpretada}`
+                                : "Resposta usando contexto da conversa"
+                            }
+                          >
+                            Contexto ativo
+                          </span>
+                        ) : null}
+                      </div>
+                      <p>
+                        {item.text}
+                        {isConsultandoAssistente && assistenteTypingMessageId === item.id ? (
+                          <span className="assistant-typing-cursor" aria-hidden="true">
+                            |
+                          </span>
+                        ) : null}
+                      </p>
+                      <p className="assistant-chat-time">{formatChatTime(item.createdAt)}</p>
+                    </article>
+                  ))}
+                  {isConsultandoAssistente && (
+                    <article className="assistant-chat-message assistant assistant-chat-typing">
+                      <div className="assistant-chat-meta assistant">
+                        <span className="assistant-chat-avatar" aria-hidden="true">
+                          🤖
+                        </span>
+                        <p className="eyebrow">Assistente 360</p>
+                      </div>
+                      <p>
+                        Digitando<span className="assistant-typing-dots">...</span>
+                      </p>
+                    </article>
+                  )}
+                </div>
+
+                <div className="assistant-chat-form">
+                  <label>
+                    Pergunta
+                    <textarea
+                      rows={3}
+                      value={assistentePergunta}
+                      onChange={(e) => setAssistentePergunta(e.target.value)}
+                      onKeyDown={(e) => {
+                        if (e.key === "Enter" && !e.shiftKey) {
+                          e.preventDefault();
+                          if (!isConsultandoAssistente && !isBusy) {
+                            void onAskAssistente();
+                          }
+                        }
+                      }}
+                      placeholder="Ex.: Qual valor de desembolso ja foi feito para a cidade de Parnamirim?"
+                    />
+                  </label>
+                  <div className="action-row">
+                    <button type="button" onClick={() => void onAskAssistente()} disabled={isConsultandoAssistente || isBusy}>
+                      {isConsultandoAssistente ? "Consultando..." : "Perguntar"}
+                    </button>
+                    <button
+                      type="button"
+                      className="secondary"
+                      onClick={() => {
+                        setAssistenteConversa(emptyAssistenteConversa());
+                        setAssistentePergunta("");
+                      }}
+                      disabled={isConsultandoAssistente}
+                    >
+                      Limpar conversa
+                    </button>
+                  </div>
+                </div>
+              </div>
+            </section>
           ) : (
             <section className="dashboard">
               <div className="tab-row">
@@ -8509,6 +9762,27 @@ export default function App() {
                   onClick={() => setRelatorioTab("transferencias_discricionarias")}
                 >
                   Transf. Discricionarias
+                </button>
+                <button
+                  type="button"
+                  className={relatorioTab === "fns_repasses" ? "tab active" : "tab"}
+                  onClick={() => setRelatorioTab("fns_repasses")}
+                >
+                  FNS Repasses
+                </button>
+                <button
+                  type="button"
+                  className={relatorioTab === "consultafns_propostas" ? "tab active" : "tab"}
+                  onClick={() => setRelatorioTab("consultafns_propostas")}
+                >
+                  Consulta FNS
+                </button>
+                <button
+                  type="button"
+                  className={relatorioTab === "simec_obras" ? "tab active" : "tab"}
+                  onClick={() => setRelatorioTab("simec_obras")}
+                >
+                  SIMEC Obras
                 </button>
               </div>
 
@@ -9008,6 +10282,806 @@ export default function App() {
                                     <td>{item.risco}</td>
                                   </tr>
                                 ))
+                              )}
+                            </tbody>
+                          </table>
+                        </div>
+                      </div>
+                    </>
+                  )}
+                </>
+              ) : relatorioTab === "fns_repasses" ? (
+                <>
+                  <div className="card filters-card">
+                    <h3>Repasses FNS para municipios (InvestSUS)</h3>
+                    <div className="filters-grid columns-4">
+                      <label>
+                        Ano
+                        <input
+                          type="number"
+                          min={2000}
+                          max={2100}
+                          value={fnsRepassesFilters.ano}
+                          onChange={(e) => setFnsRepassesFilters((prev) => ({ ...prev, ano: e.target.value }))}
+                          placeholder="Ex.: 2025"
+                        />
+                      </label>
+                      <label>
+                        UF
+                        <select
+                          value={fnsRepassesFilters.uf_id}
+                          onChange={(e) =>
+                            setFnsRepassesFilters((prev) => ({
+                              ...prev,
+                              uf_id: e.target.value,
+                              co_ibge_municipio: "",
+                              cnpj: ""
+                            }))
+                          }
+                        >
+                          <option value="">Selecione</option>
+                          {fnsUfs.map((item) => (
+                            <option key={item.id} value={item.id}>
+                              {item.sigla} - {item.nomeAcentuado}
+                            </option>
+                          ))}
+                        </select>
+                      </label>
+                      <label>
+                        Municipio (IBGE)
+                        <select
+                          value={fnsRepassesFilters.co_ibge_municipio}
+                          onChange={(e) =>
+                            setFnsRepassesFilters((prev) => ({
+                              ...prev,
+                              co_ibge_municipio: e.target.value,
+                              cnpj: ""
+                            }))
+                          }
+                          disabled={fnsMunicipios.length === 0}
+                        >
+                          <option value="">Selecione</option>
+                          {fnsMunicipios.map((item) => (
+                            <option key={item.codigo} value={item.codigo}>
+                              {item.descricao} ({item.codigo})
+                            </option>
+                          ))}
+                        </select>
+                      </label>
+                      <label>
+                        Entidade / CNPJ
+                        <select
+                          value={fnsRepassesFilters.cnpj}
+                          onChange={(e) => setFnsRepassesFilters((prev) => ({ ...prev, cnpj: e.target.value }))}
+                          disabled={fnsEntidades.length === 0}
+                        >
+                          <option value="">Selecione</option>
+                          {fnsEntidades.map((item) => (
+                            <option key={`${item.cnpj}-${item.nome}`} value={item.cnpj}>
+                              {item.nome} ({formatCnpj(item.cnpj)})
+                            </option>
+                          ))}
+                        </select>
+                      </label>
+                      <label>
+                        CNPJ manual
+                        <input
+                          value={fnsRepassesFilters.cnpj}
+                          onChange={(e) =>
+                            setFnsRepassesFilters((prev) => ({
+                              ...prev,
+                              cnpj: formatCnpj(e.target.value.replace(/\D/g, ""))
+                            }))
+                          }
+                          placeholder="00.000.000/0000-00"
+                        />
+                      </label>
+                      <label>
+                        Codigo bloco (detalhe)
+                        <input
+                          value={fnsRepassesFilters.codigo_bloco}
+                          onChange={(e) => setFnsRepassesFilters((prev) => ({ ...prev, codigo_bloco: e.target.value }))}
+                          placeholder="Ex.: 10"
+                        />
+                      </label>
+                    </div>
+
+                    <div className="action-row">
+                      <button type="button" onClick={() => void onApplyFnsRepassesFilters()} disabled={isBusy}>
+                        Consultar
+                      </button>
+                      <button type="button" className="secondary" onClick={onClearFnsRepassesFilters} disabled={isBusy}>
+                        Limpar filtros
+                      </button>
+                      <button
+                        type="button"
+                        className="secondary"
+                        onClick={() => void loadFnsSyncStatus()}
+                        disabled={isBusy}
+                      >
+                        Atualizar status
+                      </button>
+                      {canManageInstruments && (
+                        <button type="button" className="secondary" onClick={() => void onSyncFnsCache()} disabled={isBusy}>
+                          Sincronizar cache FNS
+                        </button>
+                      )}
+                    </div>
+                  </div>
+
+                  {fnsSyncStatus && (
+                    <div className="card table-card">
+                      <p>
+                        Status cache: {fnsSyncStatus.status} | Atualizado em: {fnsSyncStatus.atualizado_em ?? "-"} | Entradas: {" "}
+                        {fnsSyncStatus.entradas_cache} | Falhas: {fnsSyncStatus.falhas}
+                      </p>
+                      {fnsSyncStatus.detalhe && <p className="muted">{fnsSyncStatus.detalhe}</p>}
+                    </div>
+                  )}
+
+                  {!fnsRepassesData ? (
+                    <div className="card table-card">
+                      <p>Selecione um CNPJ e clique em consultar para carregar repasses e saldos do FNS.</p>
+                    </div>
+                  ) : (
+                    <>
+                      <div className="report-kpi-grid">
+                        <div className="card kpi-card">
+                          <p className="eyebrow">Blocos com repasse</p>
+                          <h3>{fnsRepassesData.quantidade}</h3>
+                        </div>
+                        <div className="card kpi-card">
+                          <p className="eyebrow">Total repassado</p>
+                          <h3>{formatCurrency(fnsRepassesData.valor)}</h3>
+                        </div>
+                        <div className="card kpi-card">
+                          <p className="eyebrow">Tipos de conta</p>
+                          <h3>{fnsSaldosData?.quantidade ?? 0}</h3>
+                        </div>
+                        <div className="card kpi-card">
+                          <p className="eyebrow">Saldo total</p>
+                          <h3>{formatCurrency(fnsSaldosData?.valor ?? 0)}</h3>
+                        </div>
+                      </div>
+
+                      <div className="card table-card">
+                        <h3>Repasses por bloco</h3>
+                        <div className="table-wrap">
+                          <table>
+                            <thead>
+                              <tr>
+                                <th>Codigo</th>
+                                <th>Bloco</th>
+                                <th>Valor repassado</th>
+                                <th>Acoes</th>
+                              </tr>
+                            </thead>
+                            <tbody>
+                              {fnsRepassesData.itens.length === 0 ? (
+                                <tr>
+                                  <td colSpan={4}>Nenhum repasse encontrado para os filtros informados.</td>
+                                </tr>
+                              ) : (
+                                fnsRepassesData.itens.map((item) => (
+                                  <tr key={`${item.codigoBloco}-${item.nomeBloco}`}>
+                                    <td>{item.codigoBloco}</td>
+                                    <td>{item.nomeBloco}</td>
+                                    <td>{formatCurrency(item.valorRepassado)}</td>
+                                    <td>
+                                      <button
+                                        type="button"
+                                        className="secondary"
+                                        onClick={() => void onLoadFnsDetalheBloco(item.codigoBloco, item.nomeBloco)}
+                                        disabled={isBusy}
+                                      >
+                                        Ver detalhe
+                                      </button>
+                                    </td>
+                                  </tr>
+                                ))
+                              )}
+                            </tbody>
+                          </table>
+                        </div>
+                      </div>
+
+                      {fnsSaldosData && (
+                        <div className="card table-card">
+                          <h3>Saldos por tipo de conta</h3>
+                          <div className="table-wrap">
+                            <table>
+                              <thead>
+                                <tr>
+                                  <th>ID</th>
+                                  <th>Sigla</th>
+                                  <th>Descricao</th>
+                                  <th>Valor saldo</th>
+                                </tr>
+                              </thead>
+                              <tbody>
+                                {fnsSaldosData.itens.length === 0 ? (
+                                  <tr>
+                                    <td colSpan={4}>Nenhum saldo encontrado.</td>
+                                  </tr>
+                                ) : (
+                                  fnsSaldosData.itens.map((item) => (
+                                    <tr key={`${item.idTipoConta}-${item.sigla}`}>
+                                      <td>{item.idTipoConta}</td>
+                                      <td>{item.sigla}</td>
+                                      <td>{item.descricao}</td>
+                                      <td>{formatCurrency(item.valorSaldo)}</td>
+                                    </tr>
+                                  ))
+                                )}
+                              </tbody>
+                            </table>
+                          </div>
+                        </div>
+                      )}
+
+                      {fnsRepassesDetalheData && (
+                        <div className="card table-card">
+                          <h3>Detalhe de repasses ({fnsDetalheBlocoLabel || "bloco selecionado"})</h3>
+                          <p className="muted" style={{ marginTop: 0 }}>
+                            Registros: {fnsRepassesDetalheData.quantidade} | Valor: {formatCurrency(fnsRepassesDetalheData.valor)}
+                          </p>
+                          <div className="table-wrap">
+                            <table>
+                              <thead>
+                                <tr>
+                                  <th>Competencia</th>
+                                  <th>Grupo</th>
+                                  <th>Processo</th>
+                                  <th>OB</th>
+                                  <th>Data OB</th>
+                                  <th>Banco/Ag/Conta</th>
+                                  <th>Acao</th>
+                                  <th>Valor</th>
+                                </tr>
+                              </thead>
+                              <tbody>
+                                {fnsRepassesDetalheData.itens.length === 0 ? (
+                                  <tr>
+                                    <td colSpan={8}>Nenhum detalhe encontrado para o bloco selecionado.</td>
+                                  </tr>
+                                ) : (
+                                  fnsRepassesDetalheData.itens.map((item, index) => (
+                                    <tr key={`${item.numeroOB ?? "ob"}-${index}`}>
+                                      <td>{item.descricaoCompetencia ?? item.descricaoTipoCompetencia ?? "-"}</td>
+                                      <td>{item.nomeGrupo ?? "-"}</td>
+                                      <td>{item.numeroProcesso ?? "-"}</td>
+                                      <td>{item.numeroOB ?? "-"}</td>
+                                      <td>{item.dataOB ? item.dataOB.slice(0, 10) : "-"}</td>
+                                      <td>{`${item.codigoBanco ?? "-"} / ${item.numeroAgencia ?? "-"} / ${item.numeroConta ?? "-"}`}</td>
+                                      <td>{normalizeReadableText(item.nomeAcao ?? null) ?? "-"}</td>
+                                      <td>{formatCurrency(item.valorRepassado ?? 0)}</td>
+                                    </tr>
+                                  ))
+                                )}
+                              </tbody>
+                            </table>
+                          </div>
+                        </div>
+                      )}
+                    </>
+                  )}
+                </>
+              ) : relatorioTab === "consultafns_propostas" ? (
+                <>
+                  <div className="card filters-card">
+                    <h3>Consulta FNS - Propostas</h3>
+                    <div className="filters-grid columns-4">
+                      <label>
+                        Ano
+                        <select
+                          value={consultaFnsFilters.ano}
+                          onChange={(e) => setConsultaFnsFilters((prev) => ({ ...prev, ano: e.target.value }))}
+                        >
+                          <option value="">Todos</option>
+                          {consultaFnsAnos.map((item) => (
+                            <option key={item.valor} value={item.valor}>
+                              {item.descricao}
+                            </option>
+                          ))}
+                        </select>
+                      </label>
+                      <label>
+                        UF
+                        <select
+                          value={consultaFnsFilters.uf}
+                          onChange={(e) =>
+                            setConsultaFnsFilters((prev) => ({
+                              ...prev,
+                              uf: e.target.value,
+                              co_municipio_ibge: ""
+                            }))
+                          }
+                        >
+                          <option value="">Todas</option>
+                          {consultaFnsUfs.map((item) => (
+                            <option key={item.id} value={item.sigla}>
+                              {item.sigla} - {item.nome}
+                            </option>
+                          ))}
+                        </select>
+                      </label>
+                      <label>
+                        Municipio
+                        <select
+                          value={consultaFnsFilters.co_municipio_ibge}
+                          onChange={(e) => setConsultaFnsFilters((prev) => ({ ...prev, co_municipio_ibge: e.target.value }))}
+                          disabled={consultaFnsMunicipios.length === 0}
+                        >
+                          <option value="">Todos</option>
+                          {consultaFnsMunicipios.map((item) => (
+                            <option key={item.coMunicipioIbge} value={item.coMunicipioIbge}>
+                              {item.noMunicipio}
+                            </option>
+                          ))}
+                        </select>
+                      </label>
+                      <label>
+                        N° proposta
+                        <input
+                          value={consultaFnsFilters.nu_proposta}
+                          onChange={(e) => setConsultaFnsFilters((prev) => ({ ...prev, nu_proposta: e.target.value }))}
+                          placeholder="Ex.: 00394700000114008"
+                        />
+                      </label>
+                      <label>
+                        Tipo proposta
+                        <input
+                          value={consultaFnsFilters.tp_proposta}
+                          onChange={(e) => setConsultaFnsFilters((prev) => ({ ...prev, tp_proposta: e.target.value }))}
+                          placeholder="Ex.: EQUIPAMENTO"
+                        />
+                      </label>
+                      <label>
+                        Tipo recurso
+                        <input
+                          value={consultaFnsFilters.tp_recurso}
+                          onChange={(e) => setConsultaFnsFilters((prev) => ({ ...prev, tp_recurso: e.target.value }))}
+                          placeholder="Ex.: EMENDA"
+                        />
+                      </label>
+                      <label>
+                        Tipo emenda
+                        <input
+                          value={consultaFnsFilters.tp_emenda}
+                          onChange={(e) => setConsultaFnsFilters((prev) => ({ ...prev, tp_emenda: e.target.value }))}
+                          placeholder="Ex.: INDIVIDUAL"
+                        />
+                      </label>
+                      <label>
+                        Tamanho da pagina
+                        <select
+                          value={consultaFnsFilters.count}
+                          onChange={(e) => setConsultaFnsFilters((prev) => ({ ...prev, count: e.target.value }))}
+                        >
+                          <option value="10">10</option>
+                          <option value="20">20</option>
+                          <option value="50">50</option>
+                          <option value="100">100</option>
+                        </select>
+                      </label>
+                    </div>
+                    <div className="action-row">
+                      <button type="button" onClick={() => void onApplyConsultaFnsFilters(1)} disabled={isBusy}>
+                        Consultar
+                      </button>
+                      <button type="button" className="secondary" onClick={onClearConsultaFnsFilters} disabled={isBusy}>
+                        Limpar filtros
+                      </button>
+                      <button type="button" className="secondary" onClick={() => void loadConsultaFnsStatus()} disabled={isBusy}>
+                        Atualizar status
+                      </button>
+                      {canManageInstruments && (
+                        <button type="button" className="secondary" onClick={() => void onSyncConsultaFnsCache()} disabled={isBusy}>
+                          Sincronizar cache
+                        </button>
+                      )}
+                      <button type="button" className="secondary" onClick={onExportConsultaFnsAnalitico} disabled={isBusy}>
+                        Relatorio analitico
+                      </button>
+                    </div>
+                  </div>
+
+                  {consultaFnsSyncStatus && (
+                    <div className="card table-card">
+                      <p>
+                        Status cache: {consultaFnsSyncStatus.status} | Atualizado em: {consultaFnsSyncStatus.atualizado_em ?? "-"} |
+                        Entradas: {consultaFnsSyncStatus.entradas_cache} | Falhas: {consultaFnsSyncStatus.falhas}
+                      </p>
+                    </div>
+                  )}
+
+                  {!consultaFnsData ? (
+                    <div className="card table-card">
+                      <p>Defina os filtros e clique em consultar para listar propostas do Consulta FNS.</p>
+                    </div>
+                  ) : (
+                    <>
+                      <div className="card table-card">
+                        <h3>Propostas FAF</h3>
+                        <p className="muted" style={{ marginTop: 0 }}>
+                          Linhas detalhaveis: {consultaFnsData.itens.filter((item) => resolveConsultaFnsNuProposta(item) !== "").length} |
+                          Parlamentar preenchido: {consultaFnsData.itens.filter((item) => (item.parlamentares?.length ?? 0) > 0).length}
+                        </p>
+                        {(consultaFnsFilters.tp_proposta.trim() !== "" ||
+                          consultaFnsFilters.tp_recurso.trim() !== "" ||
+                          consultaFnsFilters.nu_proposta.trim() !== "") && (
+                          <div className="action-row" style={{ marginBottom: 10 }}>
+                            <button type="button" className="secondary" onClick={onResetConsultaFnsToSearchStart}>
+                              Voltar ao inicio das buscas
+                            </button>
+                          </div>
+                        )}
+                        <div className="table-wrap">
+                          <table>
+                            <thead>
+                              <tr>
+                                <th>Tipo linha</th>
+                                <th>Tipo proposta</th>
+                                <th>Tipo recurso</th>
+                                <th>N° proposta</th>
+                                <th>Entidade</th>
+                                <th>Valor</th>
+                                <th>Valor pago</th>
+                                <th>Saldo</th>
+                                <th>Parlamentar</th>
+                                <th>Partido</th>
+                                <th>Emenda</th>
+                                <th>Ano</th>
+                                <th>Valor emenda</th>
+                                <th>Acoes</th>
+                              </tr>
+                            </thead>
+                            <tbody>
+                              {consultaFnsData.itens.length === 0 ? (
+                                <tr>
+                                  <td colSpan={14}>Nenhuma proposta encontrada.</td>
+                                </tr>
+                              ) : (
+                                consultaFnsData.itens.map((item, index) => (
+                                  (() => {
+                                    const parlamentar = item.parlamentares?.[0];
+                                    const hasNuProposta = resolveConsultaFnsNuProposta(item) !== "";
+                                    return (
+                                  <tr key={`${item.nuProposta ?? index}-${item.coTipoProposta}`}>
+                                    <td>
+                                      <span className={hasNuProposta ? "stage-badge done" : "stage-badge"}>
+                                        {hasNuProposta ? "Detalhavel" : "Agregada"}
+                                      </span>
+                                    </td>
+                                    <td>{item.coTipoProposta}</td>
+                                    <td>{item.dsTipoRecurso}</td>
+                                    <td>{resolveConsultaFnsNuProposta(item) || "-"}</td>
+                                    <td>{item.noEntidade ?? "-"}</td>
+                                    <td>{formatCurrency(item.vlProposta)}</td>
+                                    <td>{formatCurrency(item.vlPago)}</td>
+                                    <td>{formatCurrency(item.vlPagar)}</td>
+                                    <td>{parlamentar?.noApelidoPolitico ?? "-"}</td>
+                                    <td>{parlamentar?.sgPartido ?? "-"}</td>
+                                    <td>{parlamentar?.coEmendaPolitica ?? "-"}</td>
+                                    <td>{parlamentar?.nuAnoExercicio ?? "-"}</td>
+                                    <td>{parlamentar?.vlIndObjeto == null ? "-" : formatCurrency(Number(parlamentar.vlIndObjeto))}</td>
+                                    <td>
+                                      <button
+                                        type="button"
+                                        className="secondary"
+                                        onClick={() => void onOpenConsultaFnsDetalhe(item)}
+                                        disabled={isBusy}
+                                      >
+                                        {hasNuProposta ? "Detalhar" : "Listar propostas"}
+                                      </button>
+                                    </td>
+                                  </tr>
+                                    );
+                                  })()
+                                ))
+                              )}
+                            </tbody>
+                          </table>
+                        </div>
+                      </div>
+
+                      <div className="action-row">
+                        <button
+                          type="button"
+                          className="secondary"
+                          onClick={() => void onApplyConsultaFnsFilters(consultaFnsPage - 1)}
+                          disabled={isBusy || !consultaFnsData.paginacao.tem_anterior}
+                        >
+                          Pagina anterior
+                        </button>
+                        <button
+                          type="button"
+                          className="secondary"
+                          onClick={() => void onApplyConsultaFnsFilters(consultaFnsPage + 1)}
+                          disabled={isBusy || !consultaFnsData.paginacao.tem_proxima}
+                        >
+                          Proxima pagina
+                        </button>
+                      </div>
+
+                      {consultaFnsDetalhe && (
+                        <div className="card table-card">
+                          <div className="action-row" style={{ marginBottom: 10 }}>
+                            <button type="button" className="secondary" onClick={onCloseConsultaFnsDetalhe}>
+                              Voltar para lista
+                            </button>
+                          </div>
+                          <h3>Detalhe proposta {consultaFnsSelected?.nuProposta ?? consultaFnsDetalhe.nuProposta}</h3>
+                          <p>
+                            <strong>Entidade:</strong> {consultaFnsDetalhe.noEntidade} | <strong>Municipio/UF:</strong>{" "}
+                            {consultaFnsDetalhe.noMunicipio}/{consultaFnsDetalhe.sgUf} | <strong>Situacao:</strong>{" "}
+                            {consultaFnsDetalhe.situacao?.descricaoSituacaoproposta ?? "Nao informada"}
+                          </p>
+                          <p>
+                            <strong>Portaria:</strong> {consultaFnsDetalhe.nuPortaria ?? "-"} | <strong>Processo:</strong>{" "}
+                            {consultaFnsDetalhe.nuProcesso ?? "-"}
+                          </p>
+                          <p>
+                            <strong>Valor proposta:</strong> {formatCurrency(consultaFnsDetalhe.vlProposta)} | <strong>Empenhado:</strong>{" "}
+                            {formatCurrency(consultaFnsDetalhe.vlEmpenhado)} | <strong>Pago:</strong>{" "}
+                            {formatCurrency(consultaFnsDetalhe.vlPago)}
+                          </p>
+                          <div className="table-wrap">
+                            <table>
+                              <thead>
+                                <tr>
+                                  <th>Parlamentar</th>
+                                  <th>Partido</th>
+                                  <th>Emenda</th>
+                                  <th>Ano</th>
+                                  <th>Valor</th>
+                                </tr>
+                              </thead>
+                              <tbody>
+                                {consultaFnsDetalhe.parlamentares.length === 0 ? (
+                                  <tr>
+                                    <td colSpan={5}>Nenhum parlamentar informado.</td>
+                                  </tr>
+                                ) : (
+                                  consultaFnsDetalhe.parlamentares.map((item, index) => (
+                                    <tr key={`${item.coEmendaPolitica}-${index}`}>
+                                      <td>{item.noApelidoPolitico}</td>
+                                      <td>{item.sgPartido}</td>
+                                      <td>{item.coEmendaPolitica}</td>
+                                      <td>{item.nuAnoExercicio}</td>
+                                      <td>{formatCurrency(item.vlIndObjeto)}</td>
+                                    </tr>
+                                  ))
+                                )}
+                              </tbody>
+                            </table>
+                          </div>
+                        </div>
+                      )}
+                    </>
+                  )}
+                </>
+              ) : relatorioTab === "simec_obras" ? (
+                <>
+                  {!simecObraDetalhe && (
+                    <div className="card filters-card">
+                      <h3>SIMEC - Painel de Obras</h3>
+                      <div className="filters-grid columns-4">
+                        <label>
+                          UF
+                          <select
+                            value={simecObrasFilters.uf}
+                            onChange={(e) =>
+                              setSimecObrasFilters((prev) => ({
+                                ...prev,
+                                uf: e.target.value,
+                                muncod: ""
+                              }))
+                            }
+                          >
+                            <option value="">Selecione</option>
+                            {simecUfs.map((item) => (
+                              <option key={item.uf} value={item.sigla}>
+                                {item.sigla} - {item.nome}
+                              </option>
+                            ))}
+                          </select>
+                        </label>
+                        <label>
+                          Municipio
+                          <select
+                            value={simecObrasFilters.muncod}
+                            onChange={(e) => setSimecObrasFilters((prev) => ({ ...prev, muncod: e.target.value }))}
+                            disabled={simecMunicipios.length === 0}
+                          >
+                            <option value="">Selecione</option>
+                            {simecMunicipios.map((item) => (
+                              <option key={item.codigo} value={item.codigo}>
+                                {item.nome} ({item.codigo})
+                              </option>
+                            ))}
+                          </select>
+                        </label>
+                        <label>
+                          Codigo municipio (IBGE)
+                          <input
+                            value={simecObrasFilters.muncod}
+                            onChange={(e) =>
+                              setSimecObrasFilters((prev) => ({ ...prev, muncod: e.target.value.replace(/\D/g, "") }))
+                            }
+                            placeholder="Ex.: 120040"
+                          />
+                        </label>
+                        <label>
+                          Esfera
+                          <input
+                            value={simecObrasFilters.esfera}
+                            onChange={(e) => setSimecObrasFilters((prev) => ({ ...prev, esfera: e.target.value }))}
+                            placeholder="Ex.: MUNICIPAL"
+                          />
+                        </label>
+                        <label>
+                          Tipologia
+                          <input
+                            value={simecObrasFilters.tipologia}
+                            onChange={(e) => setSimecObrasFilters((prev) => ({ ...prev, tipologia: e.target.value }))}
+                            placeholder="Ex.: QUADRA"
+                          />
+                        </label>
+                        <label>
+                          Vigencia
+                          <select
+                            value={simecObrasFilters.vigencia_status}
+                            onChange={(e) =>
+                              setSimecObrasFilters((prev) => ({
+                                ...prev,
+                                vigencia_status: e.target.value as "" | "vencidas" | "30" | "60" | "90"
+                              }))
+                            }
+                          >
+                            <option value="">Todas</option>
+                            <option value="vencidas">Ja venceram</option>
+                            <option value="30">Vencem em ate 30 dias</option>
+                            <option value="60">Vencem em ate 60 dias</option>
+                            <option value="90">Vencem em ate 90 dias</option>
+                          </select>
+                        </label>
+                        <label>
+                          ID da obra
+                          <input
+                            value={simecObrasFilters.obrid}
+                            onChange={(e) =>
+                              setSimecObrasFilters((prev) => ({ ...prev, obrid: e.target.value.replace(/\D/g, "") }))
+                            }
+                            placeholder="Ex.: 1016561"
+                          />
+                        </label>
+                      </div>
+
+                      <div className="action-row">
+                        <button type="button" onClick={() => void onApplySimecObrasFilters()} disabled={isBusy}>
+                          Consultar
+                        </button>
+                        <button type="button" className="secondary" onClick={onClearSimecObrasFilters} disabled={isBusy}>
+                          Limpar filtros
+                        </button>
+                      </div>
+                    </div>
+                  )}
+
+                  {!simecObrasData ? (
+                    <div className="card table-card">
+                      <p>Selecione UF e municipio para consultar obras do SIMEC.</p>
+                    </div>
+                  ) : simecObraDetalhe ? (
+                    <div className="card table-card">
+                      <div className="action-row" style={{ marginBottom: 10 }}>
+                        <button type="button" className="secondary" onClick={onCloseSimecObraDetalhe}>
+                          Voltar para lista
+                        </button>
+                      </div>
+                      <h3>Detalhe da obra {simecObraDetalheId ?? simecObraDetalhe.obra_id}</h3>
+                      <p>
+                        <strong>Titulo:</strong> {normalizeReadableTextSafe(simecObraDetalhe.titulo)}
+                      </p>
+                      <p>
+                        <strong>Pagina oficial:</strong>{" "}
+                        <a href={simecObraDetalhe.detalhe_url} target="_blank" rel="noreferrer">
+                          Abrir no SIMEC
+                        </a>
+                      </p>
+                      <div className="table-wrap">
+                        <table>
+                          <thead>
+                            <tr>
+                              <th>Campo</th>
+                              <th>Valor</th>
+                            </tr>
+                          </thead>
+                          <tbody>
+                            {Object.entries(simecObraDetalhe.detalhes).length === 0 ? (
+                              <tr>
+                                <td colSpan={2}>Sem detalhes estruturados para esta obra.</td>
+                              </tr>
+                            ) : (
+                              Object.entries(simecObraDetalhe.detalhes).map(([campo, valor]) => (
+                                <tr key={campo}>
+                                  <td>{normalizeReadableTextSafe(campo)}</td>
+                                  <td>{normalizeReadableTextSafe(valor)}</td>
+                                </tr>
+                              ))
+                            )}
+                          </tbody>
+                        </table>
+                      </div>
+                    </div>
+                  ) : (
+                    <>
+                      <div className="report-kpi-grid">
+                        <div className="card kpi-card">
+                          <p className="eyebrow">Obras encontradas</p>
+                          <h3>{simecObrasData.total}</h3>
+                        </div>
+                        <div className="card kpi-card">
+                          <p className="eyebrow">Obras exibidas</p>
+                          <h3>{filteredSimecObrasItems.length}</h3>
+                        </div>
+                      </div>
+
+                      <div className="card table-card">
+                        <h3>Obras listadas</h3>
+                        <div className="table-wrap">
+                          <table>
+                            <thead>
+                              <tr>
+                                <th>ID</th>
+                                <th>Titulo</th>
+                                <th>Situacao</th>
+                                <th>Localizacao</th>
+                                <th>Esfera</th>
+                                <th>Tipologia</th>
+                                <th>Fim vigencia</th>
+                                <th>Dias p/ vencer</th>
+                                <th>Valor previsto</th>
+                                <th>Pago FNDE</th>
+                                <th>% execucao</th>
+                                <th>Acoes</th>
+                              </tr>
+                            </thead>
+                            <tbody>
+                              {filteredSimecObrasItems.length === 0 ? (
+                                <tr>
+                                  <td colSpan={12}>Nenhuma obra encontrada para os filtros informados.</td>
+                                </tr>
+                              ) : (
+                                filteredSimecObrasItems.map((item) => {
+                                  const diasParaVencer = item.vigencia_fim ? getDaysUntilDate(item.vigencia_fim) : null;
+                                  return (
+                                    <tr key={item.obra_id}>
+                                      <td>{item.obra_id}</td>
+                                      <td>{normalizeReadableTextSafe(item.titulo)}</td>
+                                      <td>{normalizeReadableTextSafe(item.situacao)}</td>
+                                      <td>{normalizeReadableTextSafe(item.localizacao)}</td>
+                                      <td>{normalizeReadableTextSafe(item.esfera)}</td>
+                                      <td>{normalizeReadableTextSafe(item.tipo)}</td>
+                                      <td>{item.vigencia_fim ? formatDateOnlyPtBr(item.vigencia_fim) : "-"}</td>
+                                      <td>{diasParaVencer === null ? "-" : `${diasParaVencer} dias`}</td>
+                                      <td>{item.valor_previsto == null ? "-" : formatCurrency(item.valor_previsto)}</td>
+                                      <td>{item.valor_pago_fnde == null ? "-" : formatCurrency(item.valor_pago_fnde)}</td>
+                                      <td>{item.percentual_execucao == null ? "-" : `${item.percentual_execucao.toFixed(2)}%`}</td>
+                                      <td>
+                                        <button
+                                          type="button"
+                                          className="secondary"
+                                          onClick={() => void onOpenSimecObraDetalhe(item.obra_id)}
+                                          disabled={isBusy}
+                                        >
+                                          Detalhar
+                                        </button>
+                                      </td>
+                                    </tr>
+                                  );
+                                })
                               )}
                             </tbody>
                           </table>

@@ -18,6 +18,7 @@ import {
   searchDocumentContent,
   searchDocumentContentSemantic
 } from "./documents-intelligence.service";
+import { sanitizeDocumentTitle, sanitizeOptionalText } from "./documents-text.util";
 
 const UPLOAD_DIR = path.resolve(process.cwd(), "uploads", "documents");
 const DOCUMENT_MAX_SIZE_BYTES = 20 * 1024 * 1024;
@@ -74,8 +75,8 @@ documentsRouter.post("/", uploadDocumentMiddleware, async (req, res) => {
       return res.status(401).json({ message: "Usuário não identificado" });
     }
 
-    const titulo = String(req.body?.titulo ?? "");
-    const descricao = String(req.body?.descricao ?? "");
+    const titulo = sanitizeDocumentTitle(String(req.body?.titulo ?? ""));
+    const descricao = sanitizeOptionalText(String(req.body?.descricao ?? ""));
     const arquivo = typeof req.body?.arquivo === "string" ? req.body.arquivo : "";
     const arquivo_nome = String(req.body?.arquivo_nome ?? "").trim();
     const uploadedFile = req.file;
@@ -180,9 +181,9 @@ documentsRouter.post("/", uploadDocumentMiddleware, async (req, res) => {
 
     return res.status(201).json({
       id: documento.id,
-      titulo: documento.titulo,
-      descricao: documento.descricao,
-      arquivoNome: documento.arquivoNome,
+      titulo: sanitizeDocumentTitle(documento.titulo),
+      descricao: sanitizeOptionalText(documento.descricao),
+      arquivoNome: sanitizeDocumentTitle(documento.arquivoNome, 255),
       status: documento.status,
       indexStatus: documento.indexStatus,
       aiCategory: documento.aiCategory,
@@ -312,9 +313,9 @@ documentsRouter.get("/", async (req, res) => {
     return res.json({
       documentos: documentos.map((doc) => ({
         id: doc.id,
-        titulo: doc.titulo,
-        descricao: doc.descricao,
-        arquivoNome: doc.arquivoNome,
+        titulo: sanitizeDocumentTitle(doc.titulo),
+        descricao: sanitizeOptionalText(doc.descricao),
+        arquivoNome: sanitizeDocumentTitle(doc.arquivoNome, 255),
         status: doc.status,
         indexStatus: doc.indexStatus,
         indexedAt: doc.indexedAt?.toISOString() ?? null,
@@ -384,9 +385,9 @@ documentsRouter.get("/:id", async (req, res) => {
 
     return res.json({
       id: documento.id,
-      titulo: documento.titulo,
-      descricao: documento.descricao,
-      arquivoNome: documento.arquivoNome,
+      titulo: sanitizeDocumentTitle(documento.titulo),
+      descricao: sanitizeOptionalText(documento.descricao),
+      arquivoNome: sanitizeDocumentTitle(documento.arquivoNome, 255),
       status: documento.status,
       indexStatus: documento.indexStatus,
       indexedAt: documento.indexedAt?.toISOString() ?? null,

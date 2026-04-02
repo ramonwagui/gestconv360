@@ -11,6 +11,7 @@
     "web:dev": "npm --prefix web run dev",
     "web:build": "npm --prefix web run build",
     "seed:demo": "tsx src/scripts/seed-demo-instrumentos.ts",
+    "sanitize:documents": "tsx src/scripts/sanitize-documents-text.ts",
     "test:tickets-regression": "tsx src/scripts/tickets-regression-check.ts",
     "dev:restart": "tsx src/scripts/run-and-restart-dev-servers.ts",
     "prisma:generate": "prisma generate",
